@@ -33,6 +33,10 @@ struct runtime_opts {
         
 };
 
+struct server_ctx {
+        int tcpfd;
+};
+
 static void review_config(struct runtime_opts *r_opts)
 {
         // printf("dest: %u\n", r_opts->destport);
@@ -101,6 +105,7 @@ static int create_sock_ret_fd(struct sockaddr_storage *ss_addr)
 static int main_server(struct runtime_opts *r_opts)
 {
         int ret = 0;
+        struct server_ctx *srv_ctx;
         struct sockaddr_storage ss_addr;
 
         review_config(r_opts);
@@ -112,6 +117,10 @@ static int main_server(struct runtime_opts *r_opts)
         if ((ret = create_sock_ret_fd(&ss_addr)) == -1) {
                 fprintf(stderr, "socket failed\n");
         }
+
+        srv_ctx->tcpfd = ret;
+
+        printf("server listening on %s:%d\n", r_opts->addr, r_opts->listenport);
         
 
         r_opts_clean(r_opts);
