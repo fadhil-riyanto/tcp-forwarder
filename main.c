@@ -7,17 +7,39 @@
 
 #define dbgchr(x) log_info("%c", x)
 
-enum tcpf_mode {
+#define MAX_CLIENTS 10; 
+
+enum tcpf_mode { 
         TCPF_SERVER,
         TCPF_CLIENT
 };
 
+struct poll_queue {
+        pthread_mutex_t lock;
+        uint32_t        ids;
+};
+
 struct runtime_opts {
-        enum tcpf_mode mode;
-        uint16_t srcport;
-        uint16_t destport;
+        // enum tcpf_mode mode;
+        // uint16_t srcport;
+        uint16_t listenport;
         
 };
+
+static void review_config(struct runtime_opts *r_opts)
+{
+        // printf("dest: %u\n", r_opts->destport);
+        // printf("src: %u\n", r_opts->srcport);
+        // printf("%s\n", (r_opts->mode == TCPF_SERVER ? "SERVER" : "CLIENT"));
+        printf("socks5 server listen at %u\n", r_opts->listenport);
+}
+
+static int main_server(struct runtime_opts *r_opts)
+{
+        review_config(r_opts);
+        
+        
+}
 
 static int parseopt(int argc, char **argv, struct runtime_opts *r_opts)
 {
@@ -25,37 +47,20 @@ static int parseopt(int argc, char **argv, struct runtime_opts *r_opts)
         int c = 0;
 
         static struct option opt_table[] = {
-                {"mode", required_argument, 0, 'm'},
-                {"srcport", required_argument, 0, 's'},
-                {"destport", required_argument, 0, 'd'},
-                // {"mode", required_argument, 0, 'm'},4
+                {"listen", required_argument, 0, 'l'},
                 {0, 0, 0, 0}
         };
 
         while(1) {
-                c = getopt_long(argc, argv, "m:s:d:", opt_table, &optcounter);
-                // dbgchr(c);
+                c = getopt_long(argc, argv, "l", opt_table, &optcounter);
 
                 if (c == -1)
                         break;
-
                 switch (c) {
-                        case 'm':
-                        if (strcmp(optarg, "server") == 0) {
-                                r_opts->mode = TCPF_SERVER;
-                        }
+                        
 
-                        if (strcmp(optarg, "client") == 0) {
-                                r_opts->mode = TCPF_CLIENT;
-                        }
-                        break;
-
-                        case 's':
-                        r_opts->srcport = atoi(optarg);
-                        break;
-
-                        case 'd':
-                        r_opts->destport = atoi(optarg);
+                        case 'l':
+                        r_opts->listenport = atoi(optarg);
                         break;
                 }
                 
@@ -67,9 +72,14 @@ static int parseopt(int argc, char **argv, struct runtime_opts *r_opts)
 
 int main(int argc, char **argv)
 {
+        short ret = 0;
 
         struct runtime_opts runtime_opts;
         parseopt(argc, argv, &runtime_opts);
 
-        return 0;
+        // if (runtime_opts.mode == TCPF_SERVER) {
+        ret = main_server(&runtime_opts);
+        // }
+
+        return ret;
 }
