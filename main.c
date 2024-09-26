@@ -1,5 +1,6 @@
 
 #include <asm-generic/socket.h>
+#include <signal.h>
 #include <stdio.h>
 #include <string.h>
 #include <getopt.h>
@@ -9,7 +10,9 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <time.h>
 #include <unistd.h>
+#include <signal.h>
 
 #define dbgchr(x) log_info("%c", x)
 
@@ -35,7 +38,11 @@ struct runtime_opts {
 
 struct server_ctx {
         int tcpfd;
+
+        volatile int *need_exit_ptr;
 };
+
+volatile int g_need_exit = 0;
 
 static void review_config(struct runtime_opts *r_opts)
 {
@@ -102,11 +109,48 @@ static int create_sock_ret_fd(struct sockaddr_storage *ss_addr)
         return fd;
 }
 
+static void signal_cb(int signum)
+{
+        printf("signal detected, exiting...\n");
+        g_need_exit = 1;
+
+}
+
+static int server_reg_sigaction(void)
+{       
+        struct sigaction sa;
+        int ret;
+        
+        memset(&sa, 0, sizeof(struct sigaction));
+
+        sa.sa_handler = signal_cb;
+
+        ret = sigaction(SIGINT, &sa, NULL);
+        if (ret < 0) {
+                return -1;
+        }
+
+}
+
+static int enter_eventloop(struct server_ctx *srv_ctx)
+{
+        while(!*srv_ctx->need_exit_ptr) {
+
+        }
+
+        return 0;
+}
+
 static int main_server(struct runtime_opts *r_opts)
 {
         int ret = 0;
-        struct server_ctx *srv_ctx;
+        struct server_ctx *srv_ctx = (struct server_ctx*)malloc(sizeof(struct server_ctx));
+        memset(srv_ctx, 0, sizeof(struct server_ctx));
+
         struct sockaddr_storage ss_addr;
+
+        /* link our ptr */
+        srv_ctx->need_exit_ptr = &g_need_exit;
 
         review_config(r_opts);
 
@@ -118,13 +162,22 @@ static int main_server(struct runtime_opts *r_opts)
                 fprintf(stderr, "socket failed\n");
         }
 
+        if ((ret = server_reg_sigaction()) ==  -1) {
+                fprintf(stderr, "signal handler failed\n");
+        }
+
         srv_ctx->tcpfd = ret;
 
         printf("server listening on %s:%d\n", r_opts->addr, r_opts->listenport);
+
+        if ((ret = enter_eventloop(srv_ctx) == -1)) {
+                fprintf(stderr, "error eventloop\n");
+        }
         
 
         r_opts_clean(r_opts);
         close(ret);
+        free(srv_ctx);
 
         return 0;
         
