@@ -130,6 +130,8 @@ static int server_reg_sigaction(void)
                 return -1;
         }
 
+        return 0;
+
 }
 
 static int enter_eventloop(struct server_ctx *srv_ctx)
