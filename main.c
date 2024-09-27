@@ -152,6 +152,14 @@ static void setup_epoll(struct server_ctx *srv_ctx)
         srv_ctx->epoll_fd = epoll_create1(EPOLL_CLOEXEC);
 }
 
+static void install_fd2epoll(int intrest_fd, struct server_ctx *srv_ctx)
+{
+        epoll_ctl(srv_ctx->epoll_fd, EPOLL_CTL_ADD, intrest_fd, 
+                srv_ctx->epoll_fd_queue[srv_ctx->epoll_fd_queue->i].eventmode);
+
+        srv_ctx->epoll_fd_queue->i = srv_ctx->epoll_fd_queue->i + 1;
+}
+
 static int enter_eventloop(struct server_ctx *srv_ctx)
 {
         setup_epoll(srv_ctx);
