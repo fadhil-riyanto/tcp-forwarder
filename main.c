@@ -9,10 +9,15 @@
 #include <stdlib.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <sys/poll.h>
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
 #include <signal.h>
+#include <sys/epoll.h>
+#include <sys/wait.h>
+
+#include "config.h"
 
 #define dbgchr(x) log_info("%c", x)
 
@@ -36,8 +41,15 @@ struct runtime_opts {
         
 };
 
+struct epoll_fd_queue {
+        struct epoll_event *eventmode;
+        int i;
+};
+
 struct server_ctx {
         int tcpfd;
+        int epoll_fd;
+        struct epoll_fd_queue *epoll_fd_queue;
 
         volatile int *need_exit_ptr;
 };
@@ -134,11 +146,33 @@ static int server_reg_sigaction(void)
 
 }
 
+
+static void setup_epoll(struct server_ctx *srv_ctx)
+{
+        srv_ctx->epoll_fd = epoll_create1(EPOLL_CLOEXEC);
+}
+
 static int enter_eventloop(struct server_ctx *srv_ctx)
 {
-        while(!*srv_ctx->need_exit_ptr) {
+        setup_epoll(srv_ctx);
+        struct epoll_fd_queue *epoll_fd_queue = (struct epoll_fd_queue *)malloc(
+                                                        sizeof(struct epoll_event) * MAX_ACCEPT_WORKER + sizeof(int));
+                                                        
+        srv_ctx->epoll_fd_queue = epoll_fd_queue;
 
+        for(int i = 0; i < MAX_ACCEPT_WORKER; i++) {
+                if (fork() == 0) {
+                        
+                        _exit(0);
+
+                }
         }
+
+        while(wait(NULL) > 0);
+
+        close(srv_ctx->epoll_fd);
+        free(epoll_fd_queue);
+        
 
         return 0;
 }
