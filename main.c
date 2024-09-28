@@ -67,6 +67,17 @@ struct posix_thread_handler
 };
 
 
+struct _fd_sockaddr_list {
+        struct sockaddr *sockaddr;
+        int fd;
+        int is_active;
+};
+
+struct fd_sockaddr_list {
+        struct _fd_sockaddr_list *list;
+        int size;
+};
+
 struct server_ctx {
         /* our tcp-fd */
         int tcpfd;
@@ -77,6 +88,9 @@ struct server_ctx {
         /* monitor client accept */
         int epoll_recv_fd;
         struct epoll_event *acceptfd_watchlist_event;
+
+        /* hold stack ptr from enter_eventloop func */
+        struct fd_sockaddr_list *fd_sockaddr_list;
         
         struct epoll_fd_queue *epoll_fd_queue; /* probably unused */
 
@@ -248,6 +262,52 @@ static int server_run_worker(struct server_ctx *srv_ctx, struct epoll_event *eve
         return 0;
 }
 
+static void init_fd_sockaddr(struct fd_sockaddr_list *fdsocklist)
+{
+        fdsocklist->list = (struct _fd_sockaddr_list*)malloc(sizeof(struct _fd_sockaddr_list) * 1);
+        fdsocklist->size = 1;
+}
+
+/* todo: insert active fd and sockaddr, so we can use that in other thread */
+static int add_fd_sockaddr(struct fd_sockaddr_list *fdsocklist, int fd, struct sockaddr *sockaddr)
+{
+        /* init mem */
+        fdsocklist->list[fdsocklist->size - 1].sockaddr = malloc(sizeof(struct sockaddr));
+
+        memcpy(&fdsocklist->list[fdsocklist->size - 1].sockaddr, sockaddr, sizeof(struct sockaddr));
+        fdsocklist->list[fdsocklist->size - 1].fd = fd;
+        fdsocklist->list[fdsocklist->size - 1].is_active = 1;
+
+        
+        fdsocklist->size = fdsocklist->size + 1;
+        void* dummymem = realloc(fdsocklist->list, sizeof(struct _fd_sockaddr_list) * fdsocklist->size);
+
+        if (dummymem == NULL) {
+                perror("realloc");
+
+                return -1;
+        } 
+
+        fdsocklist->list = dummymem;
+
+        return 0;
+}
+
+static struct sockaddr* get_by_fd_sockaddr(struct fd_sockaddr_list *fdsocklist, int fd_num)
+{
+        for(int i = 0; i < fdsocklist->size; i++) {
+                if (fdsocklist->list[i].is_active == 1 && fdsocklist->list[i].fd == fd_num) {
+                        return fdsocklist->list[i].sockaddr;
+                }
+        }
+
+        return NULL;
+}
+
+static int free_fd_sockaddr(struct fd_sockaddr_list *fdsocklist)
+{
+        free(fdsocklist->list);
+}
 
 
 static int install_acceptfd_to_epoll(struct server_ctx *srv_ctx, int acceptfd)
@@ -276,7 +336,7 @@ static void* start_long_poll(void *srv_ctx_voidptr) {
         ev.events = EPOLLIN;
 
         struct sockaddr sockaddr;
-        socklen_t socksize = sizeof(sockaddr);
+        socklen_t socksize = sizeof(struct sockaddr);
 
         epoll_ctl(srv_ctx->epoll_fd, EPOLL_CTL_ADD, srv_ctx->tcpfd, &ev);
 
@@ -290,6 +350,9 @@ static void* start_long_poll(void *srv_ctx_voidptr) {
 
                                 /* start adding accept fd into watchlist */
                                 install_acceptfd_to_epoll(srv_ctx, ret);
+
+                                /* self note: add mutex */
+                                add_fd_sockaddr(srv_ctx->fd_sockaddr_list, ret, &sockaddr);
                                 
                         }
                 }
@@ -298,6 +361,9 @@ static void* start_long_poll(void *srv_ctx_voidptr) {
                 // server_accept_to_epoll(srv_ctx, tcpfd_event_list, &ev);
         }
 }
+
+static void* start_private_conn(void* accepted_fd)
+{}
 
 static void* start_long_poll_receiver(void *srv_ctx_voidptr)
 {
@@ -309,6 +375,11 @@ static void* start_long_poll_receiver(void *srv_ctx_voidptr)
                                                 srv_ctx->acceptfd_watchlist_event, EPOLL_ACCEPTFD_WATCHLIST_LEN, 20);
 
                 if (n_ready_read > 0) {
+                        for (int i = 0; i < n_ready_read; i++) {
+                                get_by_fd_sockaddr(srv_ctx->fd_sockaddr_list, 
+                                                srv_ctx->acceptfd_watchlist_event[i].data.fd);
+                        }
+                        
                         printf("event available to read %d\n", n_ready_read);
                 } 
         }
@@ -317,6 +388,13 @@ static void* start_long_poll_receiver(void *srv_ctx_voidptr)
 static int enter_eventloop(struct server_ctx *srv_ctx)
 {
         struct posix_thread_handler posix_thread_handler;
+        struct fd_sockaddr_list fd_sockaddr_list;
+
+        /* assign the pointer */
+        srv_ctx->fd_sockaddr_list = &fd_sockaddr_list;
+
+        /* init shared resource between thread */
+        init_fd_sockaddr(&fd_sockaddr_list);
 
         /* appended from srv_ctx->epoll_recv_fd
          * warn: located on stack
@@ -340,6 +418,7 @@ static int enter_eventloop(struct server_ctx *srv_ctx)
         }
         close(srv_ctx->epoll_fd);     
         close(srv_ctx->epoll_recv_fd);
+        free_fd_sockaddr(&fd_sockaddr_list);
 
         return 0;
 }
