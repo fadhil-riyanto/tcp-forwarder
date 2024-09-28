@@ -4,8 +4,9 @@
 #include <stdio.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <sys/mman.h>
 
-int volatile g_signal_need_exit = 0;
+int *g_signal_need_exit;
 int saved_ppid = 0;
 
 void signal_notify(int signum)
@@ -15,7 +16,7 @@ void signal_notify(int signum)
                 printf("parent got signal %d\n", signum);
         }
 
-        g_signal_need_exit = 1;
+        *g_signal_need_exit = 1;
         
 }
 
@@ -44,6 +45,10 @@ static void enter_eventloop(void)
 
 int main(void)
 {
+        g_signal_need_exit = mmap(NULL, sizeof(int), PROT_READ | PROT_WRITE, MAP_ANONYMOUS | MAP_SHARED, -1, 0);
+        *g_signal_need_exit = 0;
+
+
         saved_ppid = getpid();
         install_signal();
 
@@ -57,4 +62,6 @@ int main(void)
         }
 
         while(wait(NULL) > 0);
+
+        munmap(g_signal_need_exit, sizeof(int));
 }
