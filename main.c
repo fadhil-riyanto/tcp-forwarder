@@ -9,13 +9,17 @@
 #include <stdlib.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <sys/mman.h>
 #include <sys/poll.h>
 #include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
 #include <signal.h>
 #include <sys/epoll.h>
+#include <errno.h>
+#include <sys/types.h>
 #include <sys/wait.h>
+#include <pthread.h>
 
 #include "config.h"
 
@@ -42,9 +46,26 @@ struct runtime_opts {
 };
 
 struct epoll_fd_queue {
-        struct epoll_event *eventmode;
+        struct epoll_event *events_arrive;
         int i;
 };
+
+struct udata {
+        struct sockaddr *addr;
+        int reserved;
+};
+
+struct posix_thread_poll_thread {
+        pthread_t pthread;
+        int state;
+};
+
+struct posix_thread_handler
+{
+        struct posix_thread_poll_thread poll_thread;
+        struct posix_thread_poll_thread poll_recv_thread;
+};
+
 
 struct server_ctx {
         int tcpfd;
@@ -124,7 +145,7 @@ static int create_sock_ret_fd(struct sockaddr_storage *ss_addr)
 static void signal_cb(int signum)
 {
         printf("signal detected, exiting...\n");
-        g_need_exit = 1;
+g_need_exit = 1;
 
 }
 
@@ -152,35 +173,120 @@ static void setup_epoll(struct server_ctx *srv_ctx)
         srv_ctx->epoll_fd = epoll_create1(EPOLL_CLOEXEC);
 }
 
-static void install_fd2epoll(int intrest_fd, struct server_ctx *srv_ctx)
-{
-        epoll_ctl(srv_ctx->epoll_fd, EPOLL_CTL_ADD, intrest_fd, 
-                srv_ctx->epoll_fd_queue[srv_ctx->epoll_fd_queue->i].eventmode);
+// static void install_fd2epoll(int intrest_fd, struct server_ctx *srv_ctx)
+// {
+//         struct epoll_event *cur_stack_epoll_event = &srv_ctx->epoll_fd_queue->eventmode[srv_ctx->epoll_fd_queue->i];
+//         cur_stack_epoll_event->events = EPOLLIN;
 
-        srv_ctx->epoll_fd_queue->i = srv_ctx->epoll_fd_queue->i + 1;
+//         epoll_ctl(
+//                 srv_ctx->epoll_fd, 
+//                 EPOLL_CTL_ADD, 
+//                 intrest_fd, 
+//                 cur_stack_epoll_event
+//         );
+
+//         srv_ctx->epoll_fd_queue->i = srv_ctx->epoll_fd_queue->i + 1;
+// }
+
+static int accept_conn(int tcpfd)
+{
+        int ret = 0;
+
+        // ret = accept(tcpfd, )
+
+        return 0;
+}
+
+static int server_run_worker(struct server_ctx *srv_ctx, struct epoll_event *event_list)
+{
+        int event_count = 0;
+        int ret = 0;
+
+        struct epoll_event ev;
+        struct sockaddr sockaddr;
+        socklen_t socklen = sizeof(sockaddr);
+
+        ev.events = EPOLLIN;
+
+        epoll_ctl(srv_ctx->epoll_fd, EPOLL_CTL_ADD, srv_ctx->tcpfd, &ev);
+
+        while (!*srv_ctx->need_exit_ptr) {
+                event_count = epoll_wait(
+                        srv_ctx->epoll_fd, 
+                        event_list, MAX_ACCEPT_WORKER, 
+                        20);
+
+
+                // printf("%d\n", event_count);
+                if (event_count > 0) {
+                        for(int i = 0; i < event_count; i++) {
+                                ret = accept(event_list[i].data.fd, &sockaddr, &socklen);
+                                write(ret, "ok\n", 4);
+                                printf("%d\n", event_list[i].data.fd);
+                                perror("accept");
+
+                                close(ret);
+
+                                return 0;
+                        }
+                }
+                        
+
+                
+
+        }
+
+        return 0;
+}
+
+
+
+static int append_acceptfd_to_epoll(struct server_ctx *srv_ctx, struct epoll_event *tcpfd_event_list, struct epoll_event *evtcpfd)
+{
+        
+
+        /* start long poll, append accept fd into */
+        return 0;
+}
+
+static void* start_long_poll(void *srv_ctx_voidptr) {
+
+        struct server_ctx *srv_ctx = (struct server_ctx*)srv_ctx_voidptr;
+
+        int n_ready_conn = 0;
+
+        struct epoll_event tcpfd_event_list[MAX_ACCEPT_WORKER]; /* monitor tcpfd for accept request */
+        struct epoll_event ev;
+        
+        ev.data.fd = srv_ctx->tcpfd;
+        ev.events = EPOLLIN;
+
+        epoll_ctl(srv_ctx->epoll_fd, EPOLL_CTL_ADD, srv_ctx->tcpfd, &ev);
+
+        while(!g_need_exit) {
+                n_ready_conn = epoll_wait(srv_ctx->epoll_fd, tcpfd_event_list, 
+                                                MAX_ACCEPT_WORKER, 20);
+
+                printf("ret %d\n", n_ready_conn);
+                // server_accept_to_epoll(srv_ctx, tcpfd_event_list, &ev);
+        }
 }
 
 static int enter_eventloop(struct server_ctx *srv_ctx)
 {
-        setup_epoll(srv_ctx);
-        struct epoll_fd_queue *epoll_fd_queue = (struct epoll_fd_queue *)malloc(
-                                                        sizeof(struct epoll_event) * MAX_ACCEPT_WORKER + sizeof(int));
-                                                        
-        srv_ctx->epoll_fd_queue = epoll_fd_queue;
-
-        for(int i = 0; i < MAX_ACCEPT_WORKER; i++) {
-                if (fork() == 0) {
-                        
-                        _exit(0);
-
-                }
-        }
-
-        while(wait(NULL) > 0);
-
-        close(srv_ctx->epoll_fd);
-        free(epoll_fd_queue);
+        struct posix_thread_handler posix_thread_handler;
         
+        setup_epoll(srv_ctx);
+        
+        pthread_create(&posix_thread_handler.poll_thread.pthread, NULL, start_long_poll, (void*)srv_ctx);
+        /* set state to 1 */
+        posix_thread_handler.poll_thread.state = 1;
+
+        /* start busy wait */
+        while(!g_need_exit) {
+                usleep(200);
+        }
+        close(srv_ctx->epoll_fd);     
 
         return 0;
 }
@@ -206,11 +312,12 @@ static int main_server(struct runtime_opts *r_opts)
                 fprintf(stderr, "socket failed\n");
         }
 
+        srv_ctx->tcpfd = ret;
+
         if ((ret = server_reg_sigaction()) ==  -1) {
                 fprintf(stderr, "signal handler failed\n");
         }
 
-        srv_ctx->tcpfd = ret;
 
         printf("server listening on %s:%d\n", r_opts->addr, r_opts->listenport);
 
