@@ -305,6 +305,43 @@ static struct sockaddr_in* get_by_fd_sockaddr(struct fd_sockaddr_list *fdsocklis
         return NULL;
 }
 
+static struct sockaddr_in* del_fd_sockaddr(struct fd_sockaddr_list *fdsocklist, int fd_num)
+{
+        if (fdsocklist->size != 0) {
+                
+
+                // fdsocklist->size = fdsocklist->size - 1;
+
+                struct _fd_sockaddr_list* dummymem = realloc(
+                        fdsocklist->list, sizeof(struct _fd_sockaddr_list) * (fdsocklist->size - 1));
+
+                if (dummymem == NULL) {
+                        perror("realloc");
+
+                        return NULL;
+                } 
+
+                int i_n = 0;
+                for(int i = 0; i < fdsocklist->size; i++) {
+                        if (fdsocklist->list[i].fd == fd_num) {
+                                /* pass, do not add instead do free */
+                                free(fdsocklist->list[i].sockaddr);
+                        } else {
+                                dummymem[i_n] = fdsocklist->list[i];
+
+                        }
+                        i_n = i_n + 1;
+                }
+
+                fdsocklist->list = dummymem;
+                fdsocklist->size = fdsocklist->size - 1;
+
+                
+        }
+
+        return NULL;
+}
+
 static int free_fd_sockaddr(struct fd_sockaddr_list *fdsocklist)
 {
         free(fdsocklist->list);
@@ -357,8 +394,6 @@ static void* start_long_poll(void *srv_ctx_voidptr) {
                                 
                         }
                 }
-
-                printf("ret %d\n", n_ready_conn);
                 // server_accept_to_epoll(srv_ctx, tcpfd_event_list, &ev);
         }
 }
@@ -379,6 +414,15 @@ static void* start_long_poll_receiver(void *srv_ctx_voidptr)
                         for (int i = 0; i < n_ready_read; i++) {
                                 get_by_fd_sockaddr(srv_ctx->fd_sockaddr_list, 
                                                 srv_ctx->acceptfd_watchlist_event[i].data.fd);
+
+                                char tempbuf[100];
+                                memset(tempbuf, 0, 100);
+                                read(srv_ctx->acceptfd_watchlist_event[i].data.fd, tempbuf, 100);
+
+                                printf("%s\n", tempbuf);
+
+                                del_fd_sockaddr(srv_ctx->fd_sockaddr_list, srv_ctx->acceptfd_watchlist_event[i].data.fd);
+                                close(srv_ctx->acceptfd_watchlist_event[i].data.fd);
                         }
                         
                         printf("event available to read %d\n", n_ready_read);
