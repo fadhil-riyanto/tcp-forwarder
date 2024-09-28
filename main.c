@@ -68,9 +68,17 @@ struct posix_thread_handler
 
 
 struct server_ctx {
+        /* our tcp-fd */
         int tcpfd;
+
+        /* handle tcp poll */
         int epoll_fd;
-        struct epoll_fd_queue *epoll_fd_queue;
+
+        /* monitor client accept */
+        int epoll_recv_fd;
+        struct epoll_event *acceptfd_watchlist_event;
+        
+        struct epoll_fd_queue *epoll_fd_queue; /* probably unused */
 
         volatile int *need_exit_ptr;
 };
@@ -171,6 +179,7 @@ static int server_reg_sigaction(void)
 static void setup_epoll(struct server_ctx *srv_ctx)
 {
         srv_ctx->epoll_fd = epoll_create1(EPOLL_CLOEXEC);
+        srv_ctx->epoll_recv_fd = epoll_create(EPOLL_CLOEXEC);
 }
 
 // static void install_fd2epoll(int intrest_fd, struct server_ctx *srv_ctx)
@@ -241,10 +250,14 @@ static int server_run_worker(struct server_ctx *srv_ctx, struct epoll_event *eve
 
 
 
-static int append_acceptfd_to_epoll(struct server_ctx *srv_ctx, struct epoll_event *tcpfd_event_list, struct epoll_event *evtcpfd)
+static int install_acceptfd_to_epoll(struct server_ctx *srv_ctx, int acceptfd)
 {
-        
+        struct epoll_event ev;
 
+        ev.data.fd = acceptfd;
+        ev.events = EPOLLIN;
+        
+        epoll_ctl(srv_ctx->epoll_recv_fd, EPOLL_CTL_ADD, acceptfd, &ev);
         /* start long poll, append accept fd into */
         return 0;
 }
@@ -252,6 +265,7 @@ static int append_acceptfd_to_epoll(struct server_ctx *srv_ctx, struct epoll_eve
 static void* start_long_poll(void *srv_ctx_voidptr) {
 
         struct server_ctx *srv_ctx = (struct server_ctx*)srv_ctx_voidptr;
+        int ret = 0;
 
         int n_ready_conn = 0;
 
@@ -261,20 +275,54 @@ static void* start_long_poll(void *srv_ctx_voidptr) {
         ev.data.fd = srv_ctx->tcpfd;
         ev.events = EPOLLIN;
 
+        struct sockaddr sockaddr;
+        socklen_t socksize = sizeof(sockaddr);
+
         epoll_ctl(srv_ctx->epoll_fd, EPOLL_CTL_ADD, srv_ctx->tcpfd, &ev);
 
         while(!g_need_exit) {
                 n_ready_conn = epoll_wait(srv_ctx->epoll_fd, tcpfd_event_list, 
                                                 MAX_ACCEPT_WORKER, 20);
+                                                
+                if (n_ready_conn > 0) {
+                        for(int i = 0; i < n_ready_conn; i++) {
+                                ret = accept(tcpfd_event_list[i].data.fd, &sockaddr, &socksize);
+
+                                /* start adding accept fd into watchlist */
+                                install_acceptfd_to_epoll(srv_ctx, ret);
+                                
+                        }
+                }
 
                 printf("ret %d\n", n_ready_conn);
                 // server_accept_to_epoll(srv_ctx, tcpfd_event_list, &ev);
         }
 }
 
+static void* start_long_poll_receiver(void *srv_ctx_voidptr)
+{
+        struct server_ctx *srv_ctx = (struct server_ctx*)srv_ctx_voidptr;
+
+        int n_ready_read = 0;
+        while(!g_need_exit) {
+                n_ready_read = epoll_wait(srv_ctx->epoll_recv_fd, 
+                                                srv_ctx->acceptfd_watchlist_event, EPOLL_ACCEPTFD_WATCHLIST_LEN, 20);
+
+                if (n_ready_read > 0) {
+                        printf("event available to read %d\n", n_ready_read);
+                } 
+        }
+}
+
 static int enter_eventloop(struct server_ctx *srv_ctx)
 {
         struct posix_thread_handler posix_thread_handler;
+
+        /* appended from srv_ctx->epoll_recv_fd
+         * warn: located on stack
+         */
+        struct epoll_event acceptfd_watchlist_event[EPOLL_ACCEPTFD_WATCHLIST_LEN];
+        srv_ctx->acceptfd_watchlist_event = acceptfd_watchlist_event;
         
         setup_epoll(srv_ctx);
         
@@ -282,11 +330,16 @@ static int enter_eventloop(struct server_ctx *srv_ctx)
         /* set state to 1 */
         posix_thread_handler.poll_thread.state = 1;
 
+        /* start our second receiver */
+        pthread_create(&posix_thread_handler.poll_recv_thread.pthread, NULL, start_long_poll_receiver, (void*)srv_ctx);
+        posix_thread_handler.poll_recv_thread.state = 1;
+
         /* start busy wait */
         while(!g_need_exit) {
                 usleep(200);
         }
         close(srv_ctx->epoll_fd);     
+        close(srv_ctx->epoll_recv_fd);
 
         return 0;
 }
