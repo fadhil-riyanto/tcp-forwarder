@@ -68,7 +68,7 @@ struct posix_thread_handler
 
 
 struct _fd_sockaddr_list {
-        struct sockaddr *sockaddr;
+        struct sockaddr_in *sockaddr;
         int fd;
         int is_active;
 };
@@ -269,12 +269,13 @@ static void init_fd_sockaddr(struct fd_sockaddr_list *fdsocklist)
 }
 
 /* todo: insert active fd and sockaddr, so we can use that in other thread */
-static int add_fd_sockaddr(struct fd_sockaddr_list *fdsocklist, int fd, struct sockaddr *sockaddr)
+static int add_fd_sockaddr(struct fd_sockaddr_list *fdsocklist, int fd, struct sockaddr_in *sockaddr)
 {
         /* init mem */
-        fdsocklist->list[fdsocklist->size - 1].sockaddr = malloc(sizeof(struct sockaddr));
+        fdsocklist->list[fdsocklist->size - 1].sockaddr = malloc(sizeof(struct sockaddr_in));
 
-        memcpy(&fdsocklist->list[fdsocklist->size - 1].sockaddr, sockaddr, sizeof(struct sockaddr));
+        // memcpy(&fdsocklist->list[fdsocklist->size - 1].sockaddr, sockaddr, sizeof(struct sockaddr_in));
+        *fdsocklist->list[fdsocklist->size - 1].sockaddr = *sockaddr;
         fdsocklist->list[fdsocklist->size - 1].fd = fd;
         fdsocklist->list[fdsocklist->size - 1].is_active = 1;
 
@@ -293,7 +294,7 @@ static int add_fd_sockaddr(struct fd_sockaddr_list *fdsocklist, int fd, struct s
         return 0;
 }
 
-static struct sockaddr* get_by_fd_sockaddr(struct fd_sockaddr_list *fdsocklist, int fd_num)
+static struct sockaddr_in* get_by_fd_sockaddr(struct fd_sockaddr_list *fdsocklist, int fd_num)
 {
         for(int i = 0; i < fdsocklist->size; i++) {
                 if (fdsocklist->list[i].is_active == 1 && fdsocklist->list[i].fd == fd_num) {
@@ -335,8 +336,8 @@ static void* start_long_poll(void *srv_ctx_voidptr) {
         ev.data.fd = srv_ctx->tcpfd;
         ev.events = EPOLLIN;
 
-        struct sockaddr sockaddr;
-        socklen_t socksize = sizeof(struct sockaddr);
+        struct sockaddr_in sockaddr;
+        socklen_t socksize = sizeof(struct sockaddr_in);
 
         epoll_ctl(srv_ctx->epoll_fd, EPOLL_CTL_ADD, srv_ctx->tcpfd, &ev);
 
@@ -346,7 +347,7 @@ static void* start_long_poll(void *srv_ctx_voidptr) {
                                                 
                 if (n_ready_conn > 0) {
                         for(int i = 0; i < n_ready_conn; i++) {
-                                ret = accept(tcpfd_event_list[i].data.fd, &sockaddr, &socksize);
+                                ret = accept(tcpfd_event_list[i].data.fd, (struct sockaddr*)&sockaddr, &socksize);
 
                                 /* start adding accept fd into watchlist */
                                 install_acceptfd_to_epoll(srv_ctx, ret);
