@@ -335,6 +335,18 @@ static struct sockaddr_in* get_by_fd_sockaddr(struct fd_sockaddr_list *fdsocklis
 }
 
 
+static void mark_conn_inactive(struct fd_sockaddr_list *fdsocklist, 
+                                              int fd_num)
+{
+        for(int i = 0; i < fdsocklist->size; i++) {
+                if (fdsocklist->list[i].is_active == 1 && 
+                                fdsocklist->list[i].fd == fd_num) {
+                                        
+                        fdsocklist->list[i].is_active = 0;
+                }
+        }
+}
+
 static pthread_t* init_get_pthread_arrptr(struct fd_sockaddr_list *fdsocklist, 
                                               int fd_num)
 {
@@ -472,10 +484,16 @@ static void* start_private_conn(void* start_private_conn_details)
 
         printf("thread xyz says: %s\n", tempbuf);
 
+        /* do on cleaner, parent thread 
         del_fd_sockaddr(srv_ctx->fd_sockaddr_list, 
                 current_fd);
 
         close(current_fd);
+        */
+
+        /* call when send error in future */
+        mark_conn_inactive(srv_ctx->fd_sockaddr_list, 
+                current_fd);
 }
 
 static void* start_long_poll_receiver(void *srv_ctx_voidptr)
@@ -515,6 +533,8 @@ static void* start_long_poll_receiver(void *srv_ctx_voidptr)
                         
                         printf("event available to read %d\n", n_ready_read);
                 } 
+
+                /* todo: run cleaner here */
         }
 }
 
