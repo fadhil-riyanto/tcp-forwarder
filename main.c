@@ -26,6 +26,9 @@
 #define dbgchr(x) log_info("%c", x)
 
 #define MAX_CLIENTS 10; 
+#define FD_SOCKADDR_DBG(x) log_info(                    \
+        "fd: %d; state: %d", x.fd, x.is_active              \
+);
 
 enum tcpf_mode { 
         TCPF_SERVER,
@@ -71,6 +74,7 @@ struct _fd_sockaddr_list {
         struct sockaddr_in *sockaddr;
         int fd;
         int is_active;
+        pthread_t *private_conn_thread;
 };
 
 struct fd_sockaddr_list {
@@ -96,6 +100,11 @@ struct server_ctx {
         struct epoll_fd_queue *epoll_fd_queue; /* probably unused */
 
         volatile int *need_exit_ptr;
+};
+
+struct start_private_conn_details {
+        struct server_ctx *srv_ctx;
+        int acceptfd;
 };
 
 volatile int g_need_exit = 0;
@@ -272,6 +281,8 @@ static void init_fd_sockaddr(struct fd_sockaddr_list *fdsocklist)
         fdsocklist->list = (struct _fd_sockaddr_list*)malloc(
                                                 sizeof(struct _fd_sockaddr_list) * 1);
 
+        pthread_mutex_init(&fdsocklist->fd_sockaddr_lock, NULL);
+
         fdsocklist->size = 1;
 }
 
@@ -314,12 +325,34 @@ static struct sockaddr_in* get_by_fd_sockaddr(struct fd_sockaddr_list *fdsocklis
         for(int i = 0; i < fdsocklist->size; i++) {
                 if (fdsocklist->list[i].is_active == 1 && 
                                 fdsocklist->list[i].fd == fd_num) {
+                                        
+                        FD_SOCKADDR_DBG(fdsocklist->list[i]);
                         return fdsocklist->list[i].sockaddr;
                 }
         }
 
         return NULL;
 }
+
+
+static pthread_t* init_get_pthread_arrptr(struct fd_sockaddr_list *fdsocklist, 
+                                              int fd_num)
+{
+        for(int i = 0; i < fdsocklist->size; i++) {
+                if (fdsocklist->list[i].is_active == 1 && 
+                                fdsocklist->list[i].fd == fd_num) {
+                                        
+                        fdsocklist->list[i].private_conn_thread = (pthread_t*)malloc(
+                                sizeof(pthread_t)
+                        );
+                        
+                        return fdsocklist->list[i].private_conn_thread;
+                }
+        }
+
+        return NULL;
+}
+
 
 static struct sockaddr_in* del_fd_sockaddr(struct fd_sockaddr_list *fdsocklist, 
                                            int fd_num)
@@ -344,6 +377,7 @@ static struct sockaddr_in* del_fd_sockaddr(struct fd_sockaddr_list *fdsocklist,
                         if (fdsocklist->list[i].fd == fd_num) {
                                 /* pass, do not add instead do free */
                                 free(fdsocklist->list[i].sockaddr);
+                                free(fdsocklist->list[i].private_conn_thread);
                         } else {
                                 dummymem[i_n] = fdsocklist->list[i];
 
@@ -422,12 +456,34 @@ static void* start_long_poll(void *srv_ctx_voidptr) {
         }
 }
 
-static void* start_private_conn(void* accepted_fd)
-{}
+static void* start_private_conn(void* start_private_conn_details)
+{
+        struct start_private_conn_details *priv_conn_inside = 
+                        (struct start_private_conn_details*)start_private_conn_details;
+
+        struct server_ctx *srv_ctx = (struct server_ctx*)priv_conn_inside->srv_ctx;
+        int current_fd = priv_conn_inside->acceptfd; /* detached fdptr */
+
+        char tempbuf[100];
+        memset(tempbuf, 0, 100);
+
+        read(current_fd, 
+                tempbuf, 100);
+
+        printf("thread xyz says: %s\n", tempbuf);
+
+        del_fd_sockaddr(srv_ctx->fd_sockaddr_list, 
+                current_fd);
+
+        close(current_fd);
+}
 
 static void* start_long_poll_receiver(void *srv_ctx_voidptr)
 {
         struct server_ctx *srv_ctx = (struct server_ctx*)srv_ctx_voidptr;
+        struct start_private_conn_details start_private_conn2thread;
+
+        start_private_conn2thread.srv_ctx = srv_ctx;
 
         int n_ready_read = 0;
         while(!g_need_exit) {
@@ -438,21 +494,23 @@ static void* start_long_poll_receiver(void *srv_ctx_voidptr)
 
                 if (n_ready_read > 0) {
                         for (int i = 0; i < n_ready_read; i++) {
-                                get_by_fd_sockaddr(srv_ctx->fd_sockaddr_list, 
-                                        srv_ctx->acceptfd_watchlist_event[i].data.fd);
 
-                                char tempbuf[100];
-                                memset(tempbuf, 0, 100);
+                                pthread_t *start_priv_connptr = init_get_pthread_arrptr(
+                                        srv_ctx->fd_sockaddr_list, 
+                                        srv_ctx->acceptfd_watchlist_event[i].data.fd
+                                );
 
-                                read(srv_ctx->acceptfd_watchlist_event[i].data.fd, 
-                                        tempbuf, 100);
+                                start_private_conn2thread.acceptfd = srv_ctx
+                                        ->acceptfd_watchlist_event[i].data.fd;
 
-                                printf("%s\n", tempbuf);
+                                pthread_create(start_priv_connptr, NULL, 
+                                                start_private_conn, 
+                                                (void*)&start_private_conn2thread);
+                                
+                                // get_by_fd_sockaddr(srv_ctx->fd_sockaddr_list, 
+                                //         srv_ctx->acceptfd_watchlist_event[i].data.fd);
 
-                                del_fd_sockaddr(srv_ctx->fd_sockaddr_list, 
-                                        srv_ctx->acceptfd_watchlist_event[i].data.fd);
-
-                                close(srv_ctx->acceptfd_watchlist_event[i].data.fd);
+                           
                         }
                         
                         printf("event available to read %d\n", n_ready_read);
