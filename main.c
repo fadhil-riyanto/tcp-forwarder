@@ -112,7 +112,8 @@ static void r_opts_clean(struct runtime_opts *r_opts)
         free(r_opts->addr);
 }
 
-static int setup_addr_storage(struct sockaddr_storage *ss_addr, struct runtime_opts *r_opts)
+static int setup_addr_storage(struct sockaddr_storage *ss_addr, 
+                              struct runtime_opts *r_opts)
 {
         int ret = 0;
         struct sockaddr_in *sockaddr_v4 = (struct sockaddr_in*)ss_addr;
@@ -220,7 +221,8 @@ static int accept_conn(int tcpfd)
         return 0;
 }
 
-static int server_run_worker(struct server_ctx *srv_ctx, struct epoll_event *event_list)
+static int server_run_worker(struct server_ctx *srv_ctx, 
+                             struct epoll_event *event_list)
 {
         int event_count = 0;
         int ret = 0;
@@ -243,6 +245,8 @@ static int server_run_worker(struct server_ctx *srv_ctx, struct epoll_event *eve
                 // printf("%d\n", event_count);
                 if (event_count > 0) {
                         for(int i = 0; i < event_count; i++) {
+
+                                /* nb: call func in future */
                                 ret = accept(event_list[i].data.fd, &sockaddr, &socklen);
                                 write(ret, "ok\n", 4);
                                 printf("%d\n", event_list[i].data.fd);
@@ -264,15 +268,19 @@ static int server_run_worker(struct server_ctx *srv_ctx, struct epoll_event *eve
 
 static void init_fd_sockaddr(struct fd_sockaddr_list *fdsocklist)
 {
-        fdsocklist->list = (struct _fd_sockaddr_list*)malloc(sizeof(struct _fd_sockaddr_list) * 1);
+        fdsocklist->list = (struct _fd_sockaddr_list*)malloc(
+                                                sizeof(struct _fd_sockaddr_list) * 1);
+
         fdsocklist->size = 1;
 }
 
 /* todo: insert active fd and sockaddr, so we can use that in other thread */
-static int add_fd_sockaddr(struct fd_sockaddr_list *fdsocklist, int fd, struct sockaddr_in *sockaddr)
+static int add_fd_sockaddr(struct fd_sockaddr_list *fdsocklist, 
+                           int fd, struct sockaddr_in *sockaddr)
 {
         /* init mem */
-        fdsocklist->list[fdsocklist->size - 1].sockaddr = malloc(sizeof(struct sockaddr_in));
+        fdsocklist->list[fdsocklist->size - 1].sockaddr = malloc(
+                                                sizeof(struct sockaddr_in));
 
         // memcpy(&fdsocklist->list[fdsocklist->size - 1].sockaddr, sockaddr, sizeof(struct sockaddr_in));
         *fdsocklist->list[fdsocklist->size - 1].sockaddr = *sockaddr;
@@ -281,7 +289,8 @@ static int add_fd_sockaddr(struct fd_sockaddr_list *fdsocklist, int fd, struct s
 
         
         fdsocklist->size = fdsocklist->size + 1;
-        void* dummymem = realloc(fdsocklist->list, sizeof(struct _fd_sockaddr_list) * fdsocklist->size);
+        void* dummymem = realloc(fdsocklist->list, 
+                        sizeof(struct _fd_sockaddr_list) * fdsocklist->size);
 
         if (dummymem == NULL) {
                 perror("realloc");
@@ -294,10 +303,12 @@ static int add_fd_sockaddr(struct fd_sockaddr_list *fdsocklist, int fd, struct s
         return 0;
 }
 
-static struct sockaddr_in* get_by_fd_sockaddr(struct fd_sockaddr_list *fdsocklist, int fd_num)
+static struct sockaddr_in* get_by_fd_sockaddr(struct fd_sockaddr_list *fdsocklist, 
+                                              int fd_num)
 {
         for(int i = 0; i < fdsocklist->size; i++) {
-                if (fdsocklist->list[i].is_active == 1 && fdsocklist->list[i].fd == fd_num) {
+                if (fdsocklist->list[i].is_active == 1 && 
+                                fdsocklist->list[i].fd == fd_num) {
                         return fdsocklist->list[i].sockaddr;
                 }
         }
@@ -305,7 +316,8 @@ static struct sockaddr_in* get_by_fd_sockaddr(struct fd_sockaddr_list *fdsocklis
         return NULL;
 }
 
-static struct sockaddr_in* del_fd_sockaddr(struct fd_sockaddr_list *fdsocklist, int fd_num)
+static struct sockaddr_in* del_fd_sockaddr(struct fd_sockaddr_list *fdsocklist, 
+                                           int fd_num)
 {
         if (fdsocklist->size != 0) {
                 
@@ -313,7 +325,8 @@ static struct sockaddr_in* del_fd_sockaddr(struct fd_sockaddr_list *fdsocklist, 
                 // fdsocklist->size = fdsocklist->size - 1;
 
                 struct _fd_sockaddr_list* dummymem = realloc(
-                        fdsocklist->list, sizeof(struct _fd_sockaddr_list) * (fdsocklist->size - 1));
+                                fdsocklist->list, 
+                                sizeof(struct _fd_sockaddr_list) * (fdsocklist->size - 1));
 
                 if (dummymem == NULL) {
                         perror("realloc");
@@ -384,13 +397,17 @@ static void* start_long_poll(void *srv_ctx_voidptr) {
                                                 
                 if (n_ready_conn > 0) {
                         for(int i = 0; i < n_ready_conn; i++) {
-                                ret = accept(tcpfd_event_list[i].data.fd, (struct sockaddr*)&sockaddr, &socksize);
+
+                                /* need call func*/
+                                ret = accept(tcpfd_event_list[i].data.fd, 
+                                        (struct sockaddr*)&sockaddr, &socksize);
 
                                 /* start adding accept fd into watchlist */
                                 install_acceptfd_to_epoll(srv_ctx, ret);
 
                                 /* self note: add mutex */
-                                add_fd_sockaddr(srv_ctx->fd_sockaddr_list, ret, &sockaddr);
+                                add_fd_sockaddr(srv_ctx->fd_sockaddr_list, 
+                                                        ret, &sockaddr);
                                 
                         }
                 }
@@ -408,20 +425,26 @@ static void* start_long_poll_receiver(void *srv_ctx_voidptr)
         int n_ready_read = 0;
         while(!g_need_exit) {
                 n_ready_read = epoll_wait(srv_ctx->epoll_recv_fd, 
-                                                srv_ctx->acceptfd_watchlist_event, EPOLL_ACCEPTFD_WATCHLIST_LEN, 20);
+                                                srv_ctx->acceptfd_watchlist_event, 
+                                                EPOLL_ACCEPTFD_WATCHLIST_LEN, 
+                                                20);
 
                 if (n_ready_read > 0) {
                         for (int i = 0; i < n_ready_read; i++) {
                                 get_by_fd_sockaddr(srv_ctx->fd_sockaddr_list, 
-                                                srv_ctx->acceptfd_watchlist_event[i].data.fd);
+                                        srv_ctx->acceptfd_watchlist_event[i].data.fd);
 
                                 char tempbuf[100];
                                 memset(tempbuf, 0, 100);
-                                read(srv_ctx->acceptfd_watchlist_event[i].data.fd, tempbuf, 100);
+
+                                read(srv_ctx->acceptfd_watchlist_event[i].data.fd, 
+                                        tempbuf, 100);
 
                                 printf("%s\n", tempbuf);
 
-                                del_fd_sockaddr(srv_ctx->fd_sockaddr_list, srv_ctx->acceptfd_watchlist_event[i].data.fd);
+                                del_fd_sockaddr(srv_ctx->fd_sockaddr_list, 
+                                        srv_ctx->acceptfd_watchlist_event[i].data.fd);
+
                                 close(srv_ctx->acceptfd_watchlist_event[i].data.fd);
                         }
                         
@@ -449,12 +472,15 @@ static int enter_eventloop(struct server_ctx *srv_ctx)
         
         setup_epoll(srv_ctx);
         
-        pthread_create(&posix_thread_handler.poll_thread.pthread, NULL, start_long_poll, (void*)srv_ctx);
+        pthread_create(&posix_thread_handler.poll_thread.pthread, 
+                        NULL, start_long_poll, (void*)srv_ctx);
         /* set state to 1 */
         posix_thread_handler.poll_thread.state = 1;
 
         /* start our second receiver */
-        pthread_create(&posix_thread_handler.poll_recv_thread.pthread, NULL, start_long_poll_receiver, (void*)srv_ctx);
+        pthread_create(&posix_thread_handler.poll_recv_thread.pthread, 
+                        NULL, start_long_poll_receiver, (void*)srv_ctx);
+        /* set state to 1 */
         posix_thread_handler.poll_recv_thread.state = 1;
 
         /* start busy wait */
