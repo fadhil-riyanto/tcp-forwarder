@@ -300,6 +300,7 @@ static int add_fd_sockaddr(struct fd_sockaddr_list *fdsocklist,
         *fdsocklist->list[fdsocklist->size - 1].sockaddr = *sockaddr;
         fdsocklist->list[fdsocklist->size - 1].fd = fd;
         fdsocklist->list[fdsocklist->size - 1].is_active = 1;
+        fdsocklist->list[fdsocklist->size - 1].private_conn_thread = NULL;
 
         
         fdsocklist->size = fdsocklist->size + 1;
@@ -350,13 +351,20 @@ static void mark_conn_inactive(struct fd_sockaddr_list *fdsocklist,
 static pthread_t* init_get_pthread_arrptr(struct fd_sockaddr_list *fdsocklist, 
                                               int fd_num)
 {
+        void *retval;
+
         for(int i = 0; i < fdsocklist->size; i++) {
                 if (fdsocklist->list[i].is_active == 1 && 
                                 fdsocklist->list[i].fd == fd_num) {
-                                        
-                        fdsocklist->list[i].private_conn_thread = (pthread_t*)malloc(
-                                sizeof(pthread_t)
-                        );
+                        
+                        if (fdsocklist->list[i].private_conn_thread == NULL) {
+                                fdsocklist->list[i].private_conn_thread = (pthread_t*)malloc(
+                                        sizeof(pthread_t)
+                                );
+                        } else {
+                                pthread_join(*fdsocklist->list[i].private_conn_thread, &retval);
+                        }
+                        
                         
                         return fdsocklist->list[i].private_conn_thread;
                 }
@@ -491,9 +499,11 @@ static void* start_private_conn(void* start_private_conn_details)
         close(current_fd);
         */
 
-        /* call when send error in future */
-        mark_conn_inactive(srv_ctx->fd_sockaddr_list, 
-                current_fd);
+        /* call when send error in future, can cause SIGSEGV because init_get_pthread_arrptr check
+         conn is active or not */
+         
+        // mark_conn_inactive(srv_ctx->fd_sockaddr_list, 
+        //         current_fd);
 }
 
 static void* start_long_poll_receiver(void *srv_ctx_voidptr)
