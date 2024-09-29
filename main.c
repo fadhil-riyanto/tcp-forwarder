@@ -74,6 +74,7 @@ struct _fd_sockaddr_list {
 };
 
 struct fd_sockaddr_list {
+        pthread_mutex_t fd_sockaddr_lock;
         struct _fd_sockaddr_list *list;
         int size;
 };
@@ -278,6 +279,8 @@ static void init_fd_sockaddr(struct fd_sockaddr_list *fdsocklist)
 static int add_fd_sockaddr(struct fd_sockaddr_list *fdsocklist, 
                            int fd, struct sockaddr_in *sockaddr)
 {
+        pthread_mutex_lock(&fdsocklist->fd_sockaddr_lock);
+
         /* init mem */
         fdsocklist->list[fdsocklist->size - 1].sockaddr = malloc(
                                                 sizeof(struct sockaddr_in));
@@ -300,6 +303,8 @@ static int add_fd_sockaddr(struct fd_sockaddr_list *fdsocklist,
 
         fdsocklist->list = dummymem;
 
+        pthread_mutex_unlock(&fdsocklist->fd_sockaddr_lock);
+
         return 0;
 }
 
@@ -321,7 +326,7 @@ static struct sockaddr_in* del_fd_sockaddr(struct fd_sockaddr_list *fdsocklist,
 {
         if (fdsocklist->size != 0) {
                 
-
+                pthread_mutex_lock(&fdsocklist->fd_sockaddr_lock);
                 // fdsocklist->size = fdsocklist->size - 1;
 
                 struct _fd_sockaddr_list* dummymem = realloc(
@@ -348,6 +353,8 @@ static struct sockaddr_in* del_fd_sockaddr(struct fd_sockaddr_list *fdsocklist,
 
                 fdsocklist->list = dummymem;
                 fdsocklist->size = fdsocklist->size - 1;
+
+                pthread_mutex_unlock(&fdsocklist->fd_sockaddr_lock);
 
                 
         }
