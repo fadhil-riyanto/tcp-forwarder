@@ -369,7 +369,17 @@ static pthread_t* init_get_pthread_arrptr(struct fd_sockaddr_list *fdsocklist,
                                         sizeof(pthread_t)
                                 );
                         } else {
-                                pthread_join(*fdsocklist->list[i].private_conn_thread, &retval);
+                                /* this is probably already allocated, but not nulled */
+                                // if (fdsocklist->list[i].private_conn_thread != NULL) {
+                                //         fdsocklist->list[i].private_conn_thread = (pthread_t*)malloc(
+                                //                 sizeof(pthread_t)
+                                //         );
+                                // } else {
+                                        pthread_join(*fdsocklist->list[i].private_conn_thread, &retval);
+                                // }
+
+
+                                
                         }
                         
                         
@@ -456,6 +466,19 @@ static int install_acceptfd_to_epoll(struct server_ctx *srv_ctx, int acceptfd)
         return 0;
 }
 
+
+static int uninstall_acceptfd_from_epoll(struct server_ctx *srv_ctx, int acceptfd)
+{
+        struct epoll_event ev;
+
+        ev.data.fd = acceptfd;
+        ev.events = EPOLLIN;
+        
+        epoll_ctl(srv_ctx->epoll_recv_fd, EPOLL_CTL_DEL, acceptfd, &ev);
+        /* start long poll, append accept fd into */
+        return 0;
+}
+
 static void* start_long_poll(void *srv_ctx_voidptr) {
 
         struct server_ctx *srv_ctx = (struct server_ctx*)srv_ctx_voidptr;
@@ -491,6 +514,7 @@ static void* start_long_poll(void *srv_ctx_voidptr) {
                                 /* self note: add mutex */
                                 add_fd_sockaddr(srv_ctx->fd_sockaddr_list, 
                                                         ret, &sockaddr);
+                                printf("accepting...\n");
                                 
                         }
                 }
@@ -509,6 +533,8 @@ static void* start_clean_conn_gc(void *srv_ctx_voidptr)
                         if (srv_ctx->fd_sockaddr_list->all_empty == 1) {
                                 /* pass */
                         } else if (srv_ctx->fd_sockaddr_list->list[i].is_active == 0) {
+                                uninstall_acceptfd_from_epoll(srv_ctx, 
+                                        srv_ctx->fd_sockaddr_list->list[i].fd);
 
                                 delete_pthread_arrptr(srv_ctx->fd_sockaddr_list, 
                                         srv_ctx->fd_sockaddr_list->list[i].fd);
@@ -538,11 +564,11 @@ static void* start_private_conn(void* start_private_conn_details)
 
         ret = read(current_fd, 
                 tempbuf, 100);
-        if (ret == 0) {
-                mark_conn_inactive(srv_ctx->fd_sockaddr_list, 
-                        current_fd);
-                perror("read");
-        }
+        // if (ret == 0) {
+        //         mark_conn_inactive(srv_ctx->fd_sockaddr_list, 
+        //                 current_fd);
+        //         perror("read");
+        // }
 
         printf("thread xyz says: %s\n", tempbuf);
 
@@ -576,20 +602,30 @@ static void* start_long_poll_receiver(void *srv_ctx_voidptr)
                 if (n_ready_read > 0) {
                         for (int i = 0; i < n_ready_read; i++) {
 
-                                pthread_t *start_priv_connptr = init_get_pthread_arrptr(
-                                        srv_ctx->fd_sockaddr_list, 
-                                        srv_ctx->acceptfd_watchlist_event[i].data.fd
-                                );
+                                // pthread_t *start_priv_connptr = init_get_pthread_arrptr(
+                                //         srv_ctx->fd_sockaddr_list, 
+                                //         srv_ctx->acceptfd_watchlist_event[i].data.fd
+                                // );
 
-                                start_private_conn2thread.acceptfd = srv_ctx
-                                        ->acceptfd_watchlist_event[i].data.fd;
+                                /* use thread pool instread */
 
-                                pthread_create(start_priv_connptr, NULL, 
-                                                start_private_conn, 
-                                                (void*)&start_private_conn2thread);
+                                // start_private_conn2thread.acceptfd = srv_ctx
+                                //         ->acceptfd_watchlist_event[i].data.fd;
+
+                                // pthread_create(start_priv_connptr, NULL, 
+                                //                 start_private_conn, 
+                                //                 (void*)&start_private_conn2thread);
                                 
                                 // get_by_fd_sockaddr(srv_ctx->fd_sockaddr_list, 
                                 //         srv_ctx->acceptfd_watchlist_event[i].data.fd);
+                                char buf[100];
+                                memset(buf, 0, 100);;
+
+                                int readctx = read(
+                                        srv_ctx->acceptfd_watchlist_event[i].data.fd, 
+                                        buf, 100);
+                                printf("%s\n", buf);
+                                close(srv_ctx->acceptfd_watchlist_event[i].data.fd);
 
                            
                         }
@@ -631,9 +667,9 @@ static int enter_eventloop(struct server_ctx *srv_ctx)
         /* set state to 1 */
         posix_thread_handler.poll_recv_thread.state = 1;
 
-        pthread_create(&posix_thread_handler.gc_eventloop.pthread, 
-                        NULL, start_clean_conn_gc, (void*)srv_ctx);
-        posix_thread_handler.gc_eventloop.state = 1;
+        // pthread_create(&posix_thread_handler.gc_eventloop.pthread, 
+        //                 NULL, start_clean_conn_gc, (void*)srv_ctx);
+        // posix_thread_handler.gc_eventloop.state = 1;
 
         /* start busy wait */
         while(!g_need_exit) {
