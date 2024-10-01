@@ -316,8 +316,14 @@ static int add_fd_sockaddr(struct fd_sockaddr_list *fdsocklist,
         pthread_mutex_lock(&fdsocklist->fd_sockaddr_lock);
 
         /* init mem */
-        fdsocklist->list[fdsocklist->size - 1].sockaddr = malloc(
-                                                sizeof(struct sockaddr_in));
+        void *sockaddrmem = malloc(
+                        sizeof(struct sockaddr_in));
+
+        if (sockaddrmem == NULL) {
+                perror("add_fd_sockaddr : ");
+        }
+
+        fdsocklist->list[fdsocklist->size - 1].sockaddr = sockaddrmem;
 
         // memcpy(&fdsocklist->list[fdsocklist->size - 1].sockaddr, sockaddr, sizeof(struct sockaddr_in));
         *fdsocklist->list[fdsocklist->size - 1].sockaddr = *sockaddr;
@@ -465,9 +471,10 @@ static struct sockaddr_in* del_fd_sockaddr(struct fd_sockaddr_list *fdsocklist,
                                 free(fdsocklist->list[i].private_conn_thread);
                         } else {
                                 dummymem[i_n] = fdsocklist->list[i];
+                                i_n = i_n + 1;
 
                         }
-                        i_n = i_n + 1;
+                        
                 }
 
                 fdsocklist->list = dummymem;
@@ -523,6 +530,9 @@ static int init_th_for_fd(struct th_pool *thpool, int fd)
 
                         thpool->th_pool[i].is_active = 1;
                         thpool->th_pool[i].need_join = 0;
+                        thpool->th_pool[i].handled_fd = fd;
+
+                        thpool->size = thpool->size + 1;
 
                         pthread_mutex_unlock(&thpool->th_pool_mutex);
 
@@ -541,11 +551,11 @@ static void uninst_th_for_fd(struct th_pool *thpool, int fd)
         pthread_mutex_lock(&thpool->th_pool_mutex);
 
         for(int i = 0; i < FREE_THREAD_ALLOC; i++) {
-                if (thpool->th_pool[i].is_active == 1 && thpool->th_pool[i].need_join == 0 &&
-                        thpool->th_pool[i].handled_fd == fd) {
-
+                if (thpool->th_pool[i].handled_fd == fd) {
                         thpool->th_pool[i].is_active = 0;
                         thpool->th_pool[i].need_join = 1;
+
+                        thpool->size = thpool->size - 1;
 
                 }
         }
@@ -593,7 +603,7 @@ static void* start_long_poll(void *srv_ctx_voidptr) {
                                 inet_ntop(AF_INET, &sockaddr.sin_addr, ip_str, INET_ADDRSTRLEN);
 
 
-                                log_info("accepted %s", ip_str);
+                                log_info("accepted [%d] %s", ret, ip_str);
                                 
                         }
                 }
@@ -609,16 +619,21 @@ static void* start_clean_conn_gc(void *srv_ctx_voidptr)
         int _ret = 0;
         void *ret = &_ret;
 
-        while(!g_need_exit) {
-                for(int i = 0; i < srv_ctx->th_pool->size; i++) {
+        
 
-                        if (srv_ctx->th_pool->th_pool[i].is_active == 0 && 
-                                srv_ctx->th_pool->th_pool[i].need_join == 1) 
+        while(!g_need_exit) {
+                
+                for(int i = 0; i < FREE_THREAD_ALLOC; i++) {
+                        
+                        if (srv_ctx->th_pool->th_pool[i].need_join == 1 
+                                && srv_ctx->th_pool->th_pool[i].is_active == 0) 
                         {
                                 pthread_join(srv_ctx->th_pool->th_pool[i].th,&ret);
                                 
                                 srv_ctx->th_pool->th_pool[i].is_active = 0;
                                 srv_ctx->th_pool->th_pool[i].need_join = 0;
+                                printf("gc clear\n");
+                                
                         }
 
                         // if () {
@@ -667,10 +682,11 @@ static void* start_private_conn(void* start_private_conn_details)
                 
                 printf("closed ... ");
                 close(current_fd);
-
+                printf("start unist %d\n", current_fd);
                 uninst_th_for_fd(srv_ctx->th_pool, current_fd);
         } else {
                 printf("thread xyz says: %s\n", tempbuf);
+                uninst_th_for_fd(srv_ctx->th_pool, current_fd);
         }
 
         
@@ -699,6 +715,8 @@ static void prepare_priv_conn(struct start_private_conn_details *start_private_c
                                 start_private_conn2thread->acceptfd);
         
         if (fd_current_state == -1) {
+                perror("connection lost");
+                close(start_private_conn2thread->acceptfd);
                 return;
         }
 
