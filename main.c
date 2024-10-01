@@ -628,11 +628,19 @@ static void* start_clean_conn_gc(void *srv_ctx_voidptr)
                         if (srv_ctx->th_pool->th_pool[i].need_join == 1 
                                 && srv_ctx->th_pool->th_pool[i].is_active == 0) 
                         {
+                                usleep(50);
+
+                                
+
+                                pthread_mutex_lock(&srv_ctx->th_pool->th_pool_mutex);
+
                                 pthread_join(srv_ctx->th_pool->th_pool[i].th,&ret);
                                 
                                 srv_ctx->th_pool->th_pool[i].is_active = 0;
                                 srv_ctx->th_pool->th_pool[i].need_join = 0;
                                 printf("gc clear\n");
+
+                                pthread_mutex_unlock(&srv_ctx->th_pool->th_pool_mutex);
                                 
                         }
 
@@ -757,6 +765,10 @@ static void* start_long_poll_receiver(void *srv_ctx_voidptr)
                                                 srv_ctx->acceptfd_watchlist_event, 
                                                 EPOLL_ACCEPTFD_WATCHLIST_LEN, 
                                                 20);
+
+                if (n_ready_read < 0) {
+                        perror("epoll_wait");
+                } 
 
                 if (n_ready_read > 0) {
                         for (int i = 0; i < n_ready_read; i++) {
