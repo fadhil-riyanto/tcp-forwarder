@@ -3,5 +3,6 @@
 
 #define MAX_ACCEPT_WORKER 5
 #define EPOLL_ACCEPTFD_WATCHLIST_LEN 20
+#define FREE_THREAD_ALLOC 50
 
 #endif
