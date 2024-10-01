@@ -373,6 +373,21 @@ static void mark_conn_inactive(struct fd_sockaddr_list *fdsocklist,
         }
 }
 
+static int is_conn_inactive(struct fd_sockaddr_list *fdsocklist, 
+                                              int fd_num)
+{
+        for(int i = 0; i < fdsocklist->size; i++) {
+                if (fdsocklist->list[i].is_active == 1 && 
+                                fdsocklist->list[i].fd == fd_num) {
+                                        
+                        return fdsocklist->list[i].is_active;
+                }
+        }
+
+        return -1;
+}
+
+/* deprecated */
 static pthread_t* init_get_pthread_arrptr(struct fd_sockaddr_list *fdsocklist, 
                                               int fd_num)
 {
@@ -408,7 +423,7 @@ static pthread_t* init_get_pthread_arrptr(struct fd_sockaddr_list *fdsocklist,
         return NULL;
 }
 
-
+/* deprecated */
 static void delete_pthread_arrptr(struct fd_sockaddr_list *fdsocklist, 
                                               int fd_num)
 {
@@ -544,6 +559,7 @@ static void* start_long_poll(void *srv_ctx_voidptr) {
         int ret = 0;
 
         int n_ready_conn = 0;
+        char ip_str[INET_ADDRSTRLEN];
 
         struct epoll_event tcpfd_event_list[MAX_ACCEPT_WORKER]; /* monitor tcpfd for accept request */
         struct epoll_event ev;
@@ -573,7 +589,11 @@ static void* start_long_poll(void *srv_ctx_voidptr) {
                                 /* self note: add mutex */
                                 add_fd_sockaddr(srv_ctx->fd_sockaddr_list, 
                                                         ret, &sockaddr);
-                                printf("accepting...\n");
+
+                                inet_ntop(AF_INET, &sockaddr.sin_addr, ip_str, INET_ADDRSTRLEN);
+
+
+                                log_info("accepted %s", ip_str);
                                 
                         }
                 }
@@ -586,24 +606,36 @@ static void* start_clean_conn_gc(void *srv_ctx_voidptr)
 {
         struct server_ctx *srv_ctx = (struct server_ctx*)srv_ctx_voidptr;
 
+        int _ret = 0;
+        void *ret = &_ret;
+
         while(!g_need_exit) {
-                for(int i = 0; i < srv_ctx->fd_sockaddr_list->size; i++) {
+                for(int i = 0; i < srv_ctx->th_pool->size; i++) {
 
-                        if (srv_ctx->fd_sockaddr_list->all_empty == 1) {
-                                /* pass */
-                        } else if (srv_ctx->fd_sockaddr_list->list[i].is_active == 0) {
-                                uninstall_acceptfd_from_epoll(srv_ctx, 
-                                        srv_ctx->fd_sockaddr_list->list[i].fd);
-
-                                delete_pthread_arrptr(srv_ctx->fd_sockaddr_list, 
-                                        srv_ctx->fd_sockaddr_list->list[i].fd);
-
-                                del_fd_sockaddr(srv_ctx->fd_sockaddr_list, 
-                                        srv_ctx->fd_sockaddr_list->list[i].fd);
-
-                                close(srv_ctx->fd_sockaddr_list->list[i].fd);
-
+                        if (srv_ctx->th_pool->th_pool[i].is_active == 0 && 
+                                srv_ctx->th_pool->th_pool[i].need_join == 1) 
+                        {
+                                pthread_join(srv_ctx->th_pool->th_pool[i].th,&ret);
+                                
+                                srv_ctx->th_pool->th_pool[i].is_active = 0;
+                                srv_ctx->th_pool->th_pool[i].need_join = 0;
                         }
+
+                        // if () {
+                        //         /* pass */
+                        // } else if (srv_ctx->fd_sockaddr_list->list[i].is_active == 0) {
+                        //         uninstall_acceptfd_from_epoll(srv_ctx, 
+                        //                 srv_ctx->fd_sockaddr_list->list[i].fd);
+
+                        //         delete_pthread_arrptr(srv_ctx->fd_sockaddr_list, 
+                        //                 srv_ctx->fd_sockaddr_list->list[i].fd);
+
+                        //         del_fd_sockaddr(srv_ctx->fd_sockaddr_list, 
+                        //                 srv_ctx->fd_sockaddr_list->list[i].fd);
+
+                        //         close(srv_ctx->fd_sockaddr_list->list[i].fd);
+
+                        // }
                 }
         }
 }
@@ -626,7 +658,8 @@ static void* start_private_conn(void* start_private_conn_details)
         if (ret == 0) {
                 mark_conn_inactive(srv_ctx->fd_sockaddr_list, 
                         current_fd);
-                        
+                
+
                 del_fd_sockaddr(srv_ctx->fd_sockaddr_list, current_fd);
 
                 uninstall_acceptfd_from_epoll(srv_ctx, current_fd);
@@ -634,6 +667,8 @@ static void* start_private_conn(void* start_private_conn_details)
                 
                 printf("closed ... ");
                 close(current_fd);
+
+                uninst_th_for_fd(srv_ctx->th_pool, current_fd);
         } else {
                 printf("thread xyz says: %s\n", tempbuf);
         }
@@ -660,6 +695,13 @@ static void prepare_priv_conn(struct start_private_conn_details *start_private_c
 {
         int ret = 0;
 
+        int fd_current_state = is_conn_inactive(srv_ctx->fd_sockaddr_list, 
+                                start_private_conn2thread->acceptfd);
+        
+        if (fd_current_state == -1) {
+                return;
+        }
+
         ret = init_th_for_fd(srv_ctx->th_pool, start_private_conn2thread->acceptfd);
 
         if (ret < 0) {
@@ -678,6 +720,8 @@ static void* start_long_poll_receiver(void *srv_ctx_voidptr)
 
 
         struct _th_pool _th_pool[FREE_THREAD_ALLOC];
+        memset(_th_pool, 0, sizeof(struct _th_pool) * FREE_THREAD_ALLOC);
+
         struct th_pool th_pool = {
                 .th_pool = _th_pool,
                 .size = 0,
@@ -753,9 +797,9 @@ static int enter_eventloop(struct server_ctx *srv_ctx)
         /* set state to 1 */
         posix_thread_handler.poll_recv_thread.state = 1;
 
-        // pthread_create(&posix_thread_handler.gc_eventloop.pthread, 
-        //                 NULL, start_clean_conn_gc, (void*)srv_ctx);
-        // posix_thread_handler.gc_eventloop.state = 1;
+        pthread_create(&posix_thread_handler.gc_eventloop.pthread, 
+                        NULL, start_clean_conn_gc, (void*)srv_ctx);
+        posix_thread_handler.gc_eventloop.state = 1;
 
         /* start busy wait */
         while(!g_need_exit) {
