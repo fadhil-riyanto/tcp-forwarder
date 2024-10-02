@@ -250,24 +250,6 @@ static int uninstall_acceptfd_from_epoll(struct server_ctx *srv_ctx, int acceptf
         return 0;
 }
 
-
-static void uninst_th_for_fd(struct th_pool *thpool, int fd)
-{
-        pthread_mutex_lock(&thpool->th_pool_mutex);
-
-        for(int i = 0; i < FREE_THREAD_ALLOC; i++) {
-                if (thpool->th_pool[i].handled_fd == fd) {
-                        thpool->th_pool[i].is_active = 0;
-                        thpool->th_pool[i].need_join = 1;
-
-                        thpool->size = thpool->size - 1;
-
-                }
-        }
-
-        pthread_mutex_unlock(&thpool->th_pool_mutex);
-}
-
 /* init fd2sockaddr function */
 
 static struct _fd_sockaddr_list* fd_sockaddr_list_ptr_init() 
@@ -339,6 +321,52 @@ static int fd_sockaddr_list_del(struct fd_sockaddr_list fd_sockaddr_list,
         return ret;
 }
 
+static int init_th_for_fd(struct th_pool *thpool, int fd)
+{
+        
+
+        for(int i = 0; i < FREE_THREAD_ALLOC; i++) {
+                if (thpool->th_pool[i].is_active == 0 && thpool->th_pool[i].need_join == 0) {
+
+                        pthread_mutex_lock(&thpool->th_pool_mutex);
+
+                        thpool->th_pool[i].is_active = 1;
+                        thpool->th_pool[i].need_join = 0;
+                        thpool->th_pool[i].handled_fd = fd;
+
+                        thpool->size = thpool->size + 1;
+
+                        pthread_mutex_unlock(&thpool->th_pool_mutex);
+
+                        /* alloc here */
+                        return i;
+                }
+        }
+
+        
+
+        return -1;
+}
+
+static void uninst_th_for_fd(struct th_pool *thpool, int fd)
+{
+        pthread_mutex_lock(&thpool->th_pool_mutex);
+
+        for(int i = 0; i < FREE_THREAD_ALLOC; i++) {
+                if (thpool->th_pool[i].handled_fd == fd) {
+                        thpool->th_pool[i].is_active = 0;
+                        thpool->th_pool[i].need_join = 1;
+
+                        thpool->size = thpool->size - 1;
+
+                }
+        }
+
+        pthread_mutex_unlock(&thpool->th_pool_mutex);
+}
+
+
+
 static void* start_long_poll(void *srv_ctx_voidptr) {
 
         struct server_ctx *srv_ctx = (struct server_ctx*)srv_ctx_voidptr;
@@ -383,26 +411,11 @@ static void* start_long_poll(void *srv_ctx_voidptr) {
         }
 }
 
-
+/* probably unused */
 static void* start_long_poll_receiver(void *srv_ctx_voidptr)
 {
         struct server_ctx *srv_ctx = (struct server_ctx*)srv_ctx_voidptr;
         struct start_private_conn_details start_private_conn2thread;
-
-        char ip_str[INET_ADDRSTRLEN];
-
-
-        struct _th_pool _th_pool[FREE_THREAD_ALLOC];
-        memset(_th_pool, 0, sizeof(struct _th_pool) * FREE_THREAD_ALLOC);
-
-        struct th_pool th_pool = {
-                .th_pool = _th_pool,
-                .size = 0,
-        };
-
-        pthread_mutex_init(&th_pool.th_pool_mutex, NULL);
-
-        srv_ctx->th_pool = &th_pool;
 
         start_private_conn2thread.srv_ctx = srv_ctx;
 
@@ -437,7 +450,7 @@ static void* start_long_poll_receiver(void *srv_ctx_voidptr)
 static void cleanup_eventloop_thread(struct posix_thread_handler *thhandler)
 {
         pthread_join(thhandler->poll_thread.pthread, NULL);
-        pthread_join(thhandler->poll_recv_thread.pthread, NULL);
+        // pthread_join(thhandler->poll_recv_thread.pthread, NULL);
         
 }
 
@@ -454,6 +467,20 @@ static int enter_eventloop(struct server_ctx *srv_ctx)
         
         srv_ctx->fd_sockaddr_list = &fd_sockaddr_list;
 
+        /* init thread pool */
+        struct _th_pool *_th_pool = malloc(sizeof(struct _th_pool) * FREE_THREAD_ALLOC);
+        memset(_th_pool, 0, sizeof(struct _th_pool) * FREE_THREAD_ALLOC);
+
+        struct th_pool th_pool = {
+                .th_pool = _th_pool,
+                .size = 0,
+        };
+
+        pthread_mutex_init(&th_pool.th_pool_mutex, NULL);
+
+        srv_ctx->th_pool = &th_pool;
+
+
         /* appended from srv_ctx->epoll_recv_fd
          * warn: located on stack
          */
@@ -468,10 +495,10 @@ static int enter_eventloop(struct server_ctx *srv_ctx)
         posix_thread_handler.poll_thread.state = 1;
 
         /* start our second receiver */
-        pthread_create(&posix_thread_handler.poll_recv_thread.pthread, 
-                        NULL, start_long_poll_receiver, (void*)srv_ctx);
-        /* set state to 1 */
-        posix_thread_handler.poll_recv_thread.state = 1;
+        // pthread_create(&posix_thread_handler.poll_recv_thread.pthread, 
+        //                 NULL, start_long_poll_receiver, (void*)srv_ctx);
+        // /* set state to 1 */
+        // posix_thread_handler.poll_recv_thread.state = 1;
 
         /* start busy wait */
         while(!g_need_exit) {
@@ -482,6 +509,7 @@ static int enter_eventloop(struct server_ctx *srv_ctx)
 
         cleanup_eventloop_thread(&posix_thread_handler);
         free(_fd_sockaddr_list);
+        free(_th_pool);
 
         return 0;
 }
