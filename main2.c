@@ -118,6 +118,7 @@ struct server_ctx {
 
 struct start_private_conn_details {
         struct server_ctx *srv_ctx;
+        struct sockaddr_in sockdata;
         int acceptfd;
 };
 
@@ -324,24 +325,24 @@ static int fd_sockaddr_list_del(struct fd_sockaddr_list fd_sockaddr_list,
 static int init_th_for_fd(struct th_pool *thpool, int fd)
 {
         
-
+        pthread_mutex_lock(&thpool->th_pool_mutex);
         for(int i = 0; i < FREE_THREAD_ALLOC; i++) {
                 if (thpool->th_pool[i].is_active == 0 && thpool->th_pool[i].need_join == 0) {
-
-                        pthread_mutex_lock(&thpool->th_pool_mutex);
 
                         thpool->th_pool[i].is_active = 1;
                         thpool->th_pool[i].need_join = 0;
                         thpool->th_pool[i].handled_fd = fd;
 
-                        thpool->size = thpool->size + 1;
+                        thpool->size = thpool->size + 1; /* probably unused */
 
-                        pthread_mutex_unlock(&thpool->th_pool_mutex);
+                        
 
                         /* alloc here */
                         return i;
                 }
         }
+
+        pthread_mutex_unlock(&thpool->th_pool_mutex);
 
         
 
@@ -350,27 +351,95 @@ static int init_th_for_fd(struct th_pool *thpool, int fd)
 
 static void uninst_th_for_fd(struct th_pool *thpool, int fd)
 {
-        pthread_mutex_lock(&thpool->th_pool_mutex);
+        
 
         for(int i = 0; i < FREE_THREAD_ALLOC; i++) {
-                if (thpool->th_pool[i].handled_fd == fd) {
+                if (thpool->th_pool[i].handled_fd == fd && thpool->th_pool[i].need_join == 1) {
+                        pthread_join(thpool->th_pool[i].th, NULL);
+
+                        pthread_mutex_lock(&thpool->th_pool_mutex);
                         thpool->th_pool[i].is_active = 0;
-                        thpool->th_pool[i].need_join = 1;
+
+                        
+                        thpool->th_pool[i].need_join = 0;
 
                         thpool->size = thpool->size - 1;
+                        pthread_mutex_unlock(&thpool->th_pool_mutex);
 
                 }
         }
 
-        pthread_mutex_unlock(&thpool->th_pool_mutex);
+        
 }
 
+static int start_unpack_packet(int fd, void* reserved)
+{
+        int ret = 0;
 
+        char buf[4096];
+        memset(buf, 0, 4096);
+
+        ret = read(fd, buf, 4096);
+        if (ret == 0) {
+                return 0;
+        } else {
+                printf("data: %s\n", buf);
+                return 1;
+        }
+}
+
+static void* start_private_conn(void *priv_conn_detailsptr)
+{
+        struct start_private_conn_details *priv_conn_details = (struct start_private_conn_details*)priv_conn_detailsptr;
+
+
+        int n_ready_conn = 0;
+        struct server_ctx *srv_ctx = priv_conn_details->srv_ctx;
+        int current_fd = priv_conn_details->acceptfd;
+        struct sockaddr_in current_sockdata = priv_conn_details->sockdata;
+
+        char ip_str[INET_ADDRSTRLEN];
+
+        while (!g_need_exit) {
+                
+                n_ready_conn = epoll_wait(srv_ctx->epoll_recv_fd,  srv_ctx->acceptfd_watchlist_event, EPOLL_ACCEPTFD_WATCHLIST_LEN, 
+                                                20);
+                                                
+                if (n_ready_conn > 0) {
+                        
+                        for (int i = 0; i < n_ready_conn; i++) {
+                                if (srv_ctx->acceptfd_watchlist_event[i].data.fd == current_fd && !g_need_exit) {
+                                        
+
+                                        int ret = start_unpack_packet(current_fd, NULL);
+
+                                        if (ret == 0) {
+                                                // struct sockaddr_in *data = fd_sockaddr_list_get(srv_ctx->fd_sockaddr_list, current_fd);
+                                                inet_ntop(AF_INET, &current_sockdata.sin_addr, ip_str, INET_ADDRSTRLEN);
+                                                printf("closed %s\n", ip_str);
+                                                close(current_fd);
+                                                uninst_th_for_fd(srv_ctx->th_pool, current_fd);
+                                        }
+                                        
+                                }
+                        }
+                }
+        }
+}
+
+static void handle_user_max(int fd) 
+{
+        log_fatal("maximum connection reached");
+        close(fd);
+}
 
 static void* start_long_poll(void *srv_ctx_voidptr) {
 
         struct server_ctx *srv_ctx = (struct server_ctx*)srv_ctx_voidptr;
         int ret = 0;
+
+        struct start_private_conn_details start_private_conn2thread;
+        start_private_conn2thread.srv_ctx = srv_ctx;
 
         int n_ready_conn = 0;
         char ip_str[INET_ADDRSTRLEN];
@@ -404,7 +473,21 @@ static void* start_long_poll(void *srv_ctx_voidptr) {
 
                                 inet_ntop(AF_INET, &sockaddr.sin_addr, ip_str, INET_ADDRSTRLEN);
                                 log_info("accepted [%d] %s", ret, ip_str);
-                                
+
+
+                                /* generate thread */
+                                int th_num = init_th_for_fd(srv_ctx->th_pool, ret);
+                                if (th_num == -1) {
+                                        handle_user_max(th_num);
+                                } else {
+                                        /* pass the data */
+                                        start_private_conn2thread.acceptfd = ret;
+                                        start_private_conn2thread.sockdata = sockaddr;
+
+                                        pthread_create(
+                                                &srv_ctx->th_pool->th_pool[th_num].th, NULL, 
+                                                start_private_conn, (void*)&start_private_conn2thread);
+                                }
                         }
                 }
                 // server_accept_to_epoll(srv_ctx, tcpfd_event_list, &ev);
@@ -432,8 +515,8 @@ static void* start_long_poll_receiver(void *srv_ctx_voidptr)
 
                 if (n_ready_read > 0) {
                         for (int i = 0; i < n_ready_read; i++) {
-                                struct sockaddr_in *sock_gate = fd_sockaddr_list_get(srv_ctx->fd_sockaddr_list, 
-                                        srv_ctx->acceptfd_watchlist_event[i].data.fd);
+                                // struct sockaddr_in *sock_gate = fd_sockaddr_list_get(srv_ctx->fd_sockaddr_list, 
+                                //         srv_ctx->acceptfd_watchlist_event[i].data.fd);
 
                                 // inet_ntop(AF_INET, &sock_gate->sin_addr, ip_str, INET_ADDRSTRLEN);
                                 // printf("closed from %s\n", ip_str);
