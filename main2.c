@@ -20,6 +20,7 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <pthread.h>
+#include <stdint.h>
 
 #include "config.h"
 
@@ -120,6 +121,44 @@ struct start_private_conn_details {
         struct server_ctx *srv_ctx;
         struct sockaddr_in sockdata;
         int acceptfd;
+};
+
+/* socks5 struct */
+struct socks5_client_hello {
+        u_int8_t ver;
+        u_int8_t nmethods;
+        u_int8_t methods;   
+};
+
+struct socks5_server_hello {
+        u_int8_t ver;
+        u_int8_t method;   
+};
+
+struct socks5_client_req {
+        u_int8_t ver;
+        u_int8_t cmd;   
+        u_int8_t rsv;   
+        u_int8_t atyp;   
+        u_int8_t* dst_addr;   
+        u_int16_t dst_port;
+        
+};
+
+enum SOCKS5_CMD {
+        SOCKS_CONNECT,
+        SOCKS_BIND,
+        SOCKS_UDP
+};
+
+struct next_req {
+        enum SOCKS5_CMD cmd;
+        char* dest;
+        uint16_t port;
+};
+
+struct socks5_session {
+        int is_auth;
 };
 
 volatile int g_need_exit = 0;
@@ -325,16 +364,17 @@ static int fd_sockaddr_list_del(struct fd_sockaddr_list fd_sockaddr_list,
 static int init_th_for_fd(struct th_pool *thpool, int fd)
 {
         
-        pthread_mutex_lock(&thpool->th_pool_mutex);
+        
         for(int i = 0; i < FREE_THREAD_ALLOC; i++) {
                 if (thpool->th_pool[i].is_active == 0 && thpool->th_pool[i].need_join == 0) {
+                        pthread_mutex_lock(&thpool->th_pool_mutex);
 
                         thpool->th_pool[i].is_active = 1;
                         thpool->th_pool[i].need_join = 0;
                         thpool->th_pool[i].handled_fd = fd;
 
                         thpool->size = thpool->size + 1; /* probably unused */
-
+                        pthread_mutex_unlock(&thpool->th_pool_mutex);
                         
 
                         /* alloc here */
@@ -342,7 +382,7 @@ static int init_th_for_fd(struct th_pool *thpool, int fd)
                 }
         }
 
-        pthread_mutex_unlock(&thpool->th_pool_mutex);
+        
 
         
 
@@ -359,10 +399,7 @@ static void uninst_th_for_fd(struct th_pool *thpool, int fd)
 
                         pthread_mutex_lock(&thpool->th_pool_mutex);
                         thpool->th_pool[i].is_active = 0;
-
-                        
                         thpool->th_pool[i].need_join = 0;
-
                         thpool->size = thpool->size - 1;
                         pthread_mutex_unlock(&thpool->th_pool_mutex);
 
@@ -372,20 +409,171 @@ static void uninst_th_for_fd(struct th_pool *thpool, int fd)
         
 }
 
-static int start_unpack_packet(int fd, void* reserved)
+static inline char* cmd2str(int cmd)
+{
+        if (cmd == 1) {
+                return "connect";
+        }
+
+        if (cmd == 2) {
+                return "bind";
+        }
+
+        if (cmd == 3) {
+                return "udp";
+        }
+}
+
+static inline char* ip2str(int cmd)
+{
+        if (cmd == 1) {
+                return "IPV4";
+        }
+
+        if (cmd == 3) {
+                return "DOMAIN";
+        }
+
+        if (cmd == 4) {
+                return "IPV6";
+        }
+}
+
+static int socks5_handshake(int fd, char* buf, struct socks5_session *socks5_session)
+{
+        struct socks5_client_hello *c_hello = (struct socks5_client_hello*)buf;
+        printf("SOCKS_HANDSHAKE version: %d; nmethods: %d; methods: %d\n", c_hello->ver, c_hello->nmethods, c_hello->methods);
+
+        struct socks5_server_hello s_hello;
+        s_hello.ver = 5;
+        s_hello.method = 0;
+        send(fd, (void*)&s_hello, sizeof(struct socks5_server_hello), 0);
+
+        socks5_session->is_auth = 1;
+}
+
+// static int debug_tcp(int fd)
+// {
+        
+// }
+
+static int start_unpack_packet(int fd, void* reserved, struct socks5_session *socks5_session)
 {
         int ret = 0;
 
-        char buf[4096];
-        memset(buf, 0, 4096);
+        
 
-        ret = read(fd, buf, 4096);
-        if (ret == 0) {
-                return 0;
+        if (socks5_session->is_auth == 0) {
+                char buf[3];
+                ret = read(fd, buf, 3);
+                if (ret == 0) {
+                        return 0;
+                }
+                socks5_handshake(fd, buf, socks5_session);
         } else {
-                printf("data: %s\n", buf);
-                return 1;
+                // return 1;
+                u_int8_t buf[4096];
+                struct next_req req_to;
+                
+                memset(buf, 0, 4096);
+                memset(buf, 0, 4096);
+                ret = read(fd, buf, 4096);
+                
+                if (ret == 0) {
+                        return 0;
+                }
+
+                printf("debug %d\n", buf[0]);
+                // int dest_len = buf[4];
+
+                // char* dest = malloc((sizeof(u_int8_t) * dest_len) + 1);
+                // int last_off_buf = 0;
+                // int last_off_key = 0;
+                // for(int i = 0; i < dest_len; i++) {
+                //         // last_off_buf = ;
+                //         *(dest + i) = buf[4 + (i + 1)];
+                //         // last_off_key = i;
+                // }
+                // dest[last_off_key] = '\0';
+                
+
+                // printf("SOCKS_REQ ver: %c; CMD: %s; type: %s; dest: %s\n", buf[3], cmd2str(buf[1]), ip2str(buf[3]), dest);
+                // free(dest);
+                
+                // if (buf[0] == 5) {
+                //         req_to.cmd = buf[1];
+                //         int ndest_length = buf[5];
+
+                //         int dest_length = 0;
+
+                //         switch (buf[3]) {
+                //                 case 1:
+                //                 dest_length = 4;
+                //                 req_to.dest = malloc(sizeof(u_int8_t) * 4);
+                //                 break;
+
+                //                 case 3:
+                //                 dest_length = ndest_length;
+                //                 req_to.dest = malloc(sizeof(u_int8_t) * ndest_length);
+                //                 break;
+
+                //                 case 4:
+                //                 dest_length = 16;
+                //                 req_to.dest = malloc(sizeof(u_int8_t) * 16);
+                //                 break;
+                //         }
+
+                        
+
+                //         req_to.port = (buf[5 + ndest_length + 1] << 4) | buf[5 + ndest_length + 2];
+
+                //         printf("%d %d %d.%d.%d.%d:%d\n",
+                //                         req_to.cmd, 
+                //                         buf[5],
+                //                         req_to.dest[0], req_to.dest[1], req_to.dest[2], req_to.dest[3],
+                //                         req_to.port
+                //                 );
+
+                //         free(req_to.dest);
+
+                // }
         }
+
+        return 1;
+}
+
+static int start_unpack_packet_no_epl(int fd, void* reserved, struct socks5_session *socks5_session)
+{
+        char buf[4096];
+        int ret = 0;
+
+        do {
+                ret = read(fd, buf, 4096);
+                if (ret == 0) {
+                        return 0;
+                }
+                if (socks5_session->is_auth == 0) {
+                        socks5_handshake(fd, buf, socks5_session);
+                } else {
+                        u_int8_t test = 128;
+
+                        printf("SOCKS_REQ ver: %c; CMD: %s; type: %s; ip: %u.%u.%u.%u\n", buf[0], 
+                                cmd2str(buf[1]), ip2str(buf[3]), buf[4], buf[5], buf[6], (u_int8_t)buf[7]);
+                }
+        }while (ret != 0);
+}
+
+static void* start_private_conn_no_epl(void *priv_conn_detailsptr)
+{
+        struct start_private_conn_details *priv_conn_details = (struct start_private_conn_details*)priv_conn_detailsptr;
+
+        struct server_ctx *srv_ctx = priv_conn_details->srv_ctx;
+
+        struct socks5_session socks5_session;
+        socks5_session.is_auth = 0;
+
+        int current_fd = priv_conn_details->acceptfd;
+        int ret = start_unpack_packet_no_epl(current_fd, NULL, &socks5_session);
 }
 
 static void* start_private_conn(void *priv_conn_detailsptr)
@@ -397,6 +585,8 @@ static void* start_private_conn(void *priv_conn_detailsptr)
         struct server_ctx *srv_ctx = priv_conn_details->srv_ctx;
         int current_fd = priv_conn_details->acceptfd;
         struct sockaddr_in current_sockdata = priv_conn_details->sockdata;
+        struct socks5_session socks5_session;
+        socks5_session.is_auth = 0;
 
         char ip_str[INET_ADDRSTRLEN];
 
@@ -408,10 +598,11 @@ static void* start_private_conn(void *priv_conn_detailsptr)
                 if (n_ready_conn > 0) {
                         
                         for (int i = 0; i < n_ready_conn; i++) {
+                                
                                 if (srv_ctx->acceptfd_watchlist_event[i].data.fd == current_fd && !g_need_exit) {
                                         
 
-                                        int ret = start_unpack_packet(current_fd, NULL);
+                                        int ret = start_unpack_packet(current_fd, NULL, &socks5_session);
 
                                         if (ret == 0) {
                                                 // struct sockaddr_in *data = fd_sockaddr_list_get(srv_ctx->fd_sockaddr_list, current_fd);
@@ -480,13 +671,14 @@ static void* start_long_poll(void *srv_ctx_voidptr) {
                                 if (th_num == -1) {
                                         handle_user_max(th_num);
                                 } else {
+                                        
                                         /* pass the data */
                                         start_private_conn2thread.acceptfd = ret;
                                         start_private_conn2thread.sockdata = sockaddr;
 
                                         pthread_create(
                                                 &srv_ctx->th_pool->th_pool[th_num].th, NULL, 
-                                                start_private_conn, (void*)&start_private_conn2thread);
+                                                start_private_conn_no_epl, (void*)&start_private_conn2thread);
                                 }
                         }
                 }
@@ -591,8 +783,10 @@ static int enter_eventloop(struct server_ctx *srv_ctx)
         close(srv_ctx->epoll_recv_fd);
 
         cleanup_eventloop_thread(&posix_thread_handler);
+        
         free(_fd_sockaddr_list);
         free(_th_pool);
+        // free(srv_ctx);
 
         return 0;
 }
