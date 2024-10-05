@@ -145,6 +145,15 @@ struct socks5_client_req {
         
 };
 
+struct socks5_server_reply {
+        u_int8_t ver;
+        u_int8_t rep;
+        u_int8_t reserved;
+        u_int8_t atyp;
+        u_int8_t* bind_addr;
+        u_int16_t bind_port;
+};
+
 enum SOCKS5_CMD {
         SOCKS_CONNECT,
         SOCKS_BIND,
@@ -461,6 +470,19 @@ static int socks5_handshake(int fd, char* buf, struct socks5_session *socks5_ses
         socks5_session->is_auth = 1;
 }
 
+static int socks5_send_connstate(int fd, char* buf, struct socks5_session *socks5_session)
+{
+        struct socks5_client_hello *c_hello = (struct socks5_client_hello*)buf;
+        printf("SOCKS_HANDSHAKE version: %d; nmethods: %d; methods: %d\n", c_hello->ver, c_hello->nmethods, c_hello->methods);
+
+        struct socks5_server_hello s_hello;
+        s_hello.ver = 5;
+        s_hello.method = 0;
+        send(fd, (void*)&s_hello, sizeof(struct socks5_server_hello), 0);
+
+        socks5_session->is_auth = 1;
+}
+
 // static int debug_tcp(int fd)
 // {
         
@@ -493,62 +515,43 @@ static int start_unpack_packet(int fd, void* reserved, struct socks5_session *so
                 }
 
                 printf("debug %d\n", buf[0]);
-                // int dest_len = buf[4];
-
-                // char* dest = malloc((sizeof(u_int8_t) * dest_len) + 1);
-                // int last_off_buf = 0;
-                // int last_off_key = 0;
-                // for(int i = 0; i < dest_len; i++) {
-                //         // last_off_buf = ;
-                //         *(dest + i) = buf[4 + (i + 1)];
-                //         // last_off_key = i;
-                // }
-                // dest[last_off_key] = '\0';
-                
-
-                // printf("SOCKS_REQ ver: %c; CMD: %s; type: %s; dest: %s\n", buf[3], cmd2str(buf[1]), ip2str(buf[3]), dest);
-                // free(dest);
-                
-                // if (buf[0] == 5) {
-                //         req_to.cmd = buf[1];
-                //         int ndest_length = buf[5];
-
-                //         int dest_length = 0;
-
-                //         switch (buf[3]) {
-                //                 case 1:
-                //                 dest_length = 4;
-                //                 req_to.dest = malloc(sizeof(u_int8_t) * 4);
-                //                 break;
-
-                //                 case 3:
-                //                 dest_length = ndest_length;
-                //                 req_to.dest = malloc(sizeof(u_int8_t) * ndest_length);
-                //                 break;
-
-                //                 case 4:
-                //                 dest_length = 16;
-                //                 req_to.dest = malloc(sizeof(u_int8_t) * 16);
-                //                 break;
-                //         }
-
-                        
-
-                //         req_to.port = (buf[5 + ndest_length + 1] << 4) | buf[5 + ndest_length + 2];
-
-                //         printf("%d %d %d.%d.%d.%d:%d\n",
-                //                         req_to.cmd, 
-                //                         buf[5],
-                //                         req_to.dest[0], req_to.dest[1], req_to.dest[2], req_to.dest[3],
-                //                         req_to.port
-                //                 );
-
-                //         free(req_to.dest);
-
-                // }
+               
         }
 
         return 1;
+}
+
+static int create_server2server_conn(int *fdptr, int atyp, u_int8_t *addr, u_int16_t port)
+{
+        int ret = 0;
+
+        int tcpfd = socket(AF_INET, SOCK_STREAM, 0);
+        struct sockaddr_in serv_addr;
+        memset(&serv_addr, 0, sizeof(struct sockaddr_in));
+
+        if (atyp == 1) {
+                char* buf = malloc(15);
+                memset(buf, 0, 15);
+                sprintf(buf, "%d.%d.%d.%d", (u_int8_t)addr[0], (u_int8_t)addr[1], (u_int8_t)addr[2], (u_int8_t)addr[3]);
+
+                serv_addr.sin_addr.s_addr = inet_addr(buf);
+                free(buf);
+        }
+        
+        serv_addr.sin_port = htons(8000);
+        serv_addr.sin_family = AF_INET;
+
+        socklen_t len = sizeof(struct sockaddr_in);
+        ret = connect(tcpfd, (struct sockaddr*)&serv_addr, len);
+
+        if (ret == -1) {
+                perror("connect()");
+                return -1;
+        }
+
+        *fdptr = tcpfd;
+
+        return 0;
 }
 
 static int start_unpack_packet_no_epl(int fd, void* reserved, struct socks5_session *socks5_session)
@@ -570,11 +573,17 @@ static int start_unpack_packet_no_epl(int fd, void* reserved, struct socks5_sess
                         
                         if (buf[3] == 1) {
                                 struct next_req_ipv4 *next_req = (struct next_req_ipv4*)buf;
-                                
+                                int cur_conn_clientfd = 0;
                                 
                                 printf("SOCKS_REQ ver: %c; CMD: %s; type: %s; ip: %u.%u.%u.%u:%d\n", buf[0], 
-                                        cmd2str(next_req->cmd), ip2str(buf[3]), next_req->dest[0], next_req->dest[1], next_req->dest[2], next_req->dest[3],
+                                        cmd2str(next_req->cmd), ip2str(next_req->atyp), next_req->dest[0], next_req->dest[1], next_req->dest[2], next_req->dest[3],
                                         ntohs(next_req->port));
+
+                                ret = create_server2server_conn(&cur_conn_clientfd, next_req->atyp, next_req->dest, next_req->port);
+
+                                if (ret == 0) {
+
+                                }
                         }
                         
                         // if1
@@ -585,14 +594,6 @@ static int start_unpack_packet_no_epl(int fd, void* reserved, struct socks5_sess
         }while (ret != 0);
 }
 
-static int create_server2server_conn(int fdptr)
-{
-        int ret = 0;
-
-        int tcpfd = socket(AF_INET, SOCK_STREAM, 0);
-        struct sockaddr_in serv_addr;
-        memset(&serv_addr, 0, sizeof(struct sockaddr_in));
-}
 
 static void* start_private_conn_no_epl(void *priv_conn_detailsptr)
 {
