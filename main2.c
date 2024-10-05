@@ -572,9 +572,9 @@ static int start_unpack_packet_no_epl(int fd, void* reserved, struct socks5_sess
                                 struct next_req_ipv4 *next_req = (struct next_req_ipv4*)buf;
                                 
                                 
-                                printf("SOCKS_REQ ver: %c; CMD: %s; type: %s; ip: %u.%u.%u.%u:%u\n", buf[0], 
+                                printf("SOCKS_REQ ver: %c; CMD: %s; type: %s; ip: %u.%u.%u.%u:%d\n", buf[0], 
                                         cmd2str(next_req->cmd), ip2str(buf[3]), next_req->dest[0], next_req->dest[1], next_req->dest[2], next_req->dest[3],
-                                        (uint16_t)next_req->port);
+                                        ntohs(next_req->port));
                         }
                         
                         // if1
