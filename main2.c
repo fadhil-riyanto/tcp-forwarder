@@ -151,9 +151,18 @@ enum SOCKS5_CMD {
         SOCKS_UDP
 };
 
-struct next_req {
-        enum SOCKS5_CMD cmd;
-        char* dest;
+enum SOCKS5_ADDRTYPE {
+        SOCKS_IN,
+        SOCKS_IN6,
+        SOCKS_DOMAIN
+};
+
+struct next_req_ipv4 {
+        u_int8_t version;
+        u_int8_t cmd;
+        u_int8_t reserved;
+        u_int8_t atyp;
+        u_int8_t dest[4];
         uint16_t port;
 };
 
@@ -473,7 +482,7 @@ static int start_unpack_packet(int fd, void* reserved, struct socks5_session *so
         } else {
                 // return 1;
                 u_int8_t buf[4096];
-                struct next_req req_to;
+                // struct next_req req_to;
                 
                 memset(buf, 0, 4096);
                 memset(buf, 0, 4096);
@@ -555,12 +564,34 @@ static int start_unpack_packet_no_epl(int fd, void* reserved, struct socks5_sess
                 if (socks5_session->is_auth == 0) {
                         socks5_handshake(fd, buf, socks5_session);
                 } else {
-                        u_int8_t test = 128;
+                        
+                        
+                        
+                        
+                        if (buf[3] == 1) {
+                                struct next_req_ipv4 *next_req = (struct next_req_ipv4*)buf;
+                                
+                                
+                                printf("SOCKS_REQ ver: %c; CMD: %s; type: %s; ip: %u.%u.%u.%u:%u\n", buf[0], 
+                                        cmd2str(next_req->cmd), ip2str(buf[3]), next_req->dest[0], next_req->dest[1], next_req->dest[2], next_req->dest[3],
+                                        (uint16_t)next_req->port);
+                        }
+                        
+                        // if1
+                        // u_int8_t test = 128;
 
-                        printf("SOCKS_REQ ver: %c; CMD: %s; type: %s; ip: %u.%u.%u.%u\n", buf[0], 
-                                cmd2str(buf[1]), ip2str(buf[3]), buf[4], buf[5], buf[6], (u_int8_t)buf[7]);
+                        
                 }
         }while (ret != 0);
+}
+
+static int create_server2server_conn(int fdptr)
+{
+        int ret = 0;
+
+        int tcpfd = socket(AF_INET, SOCK_STREAM, 0);
+        struct sockaddr_in serv_addr;
+        memset(&serv_addr, 0, sizeof(struct sockaddr_in));
 }
 
 static void* start_private_conn_no_epl(void *priv_conn_detailsptr)
