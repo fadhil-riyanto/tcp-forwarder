@@ -470,17 +470,23 @@ static int socks5_handshake(int fd, char* buf, struct socks5_session *socks5_ses
         socks5_session->is_auth = 1;
 }
 
-static int socks5_send_connstate(int fd, char* buf, struct socks5_session *socks5_session)
+static int socks5_send_connstate(int fd, u_int8_t state, u_int8_t atyp, u_int8_t *addr, uint16_t port)
 {
-        struct socks5_client_hello *c_hello = (struct socks5_client_hello*)buf;
-        printf("SOCKS_HANDSHAKE version: %d; nmethods: %d; methods: %d\n", c_hello->ver, c_hello->nmethods, c_hello->methods);
+        int ret = 0;
+        struct socks5_server_reply s_state;
+        s_state.ver = 5;
+        s_state.rep = state;
+        s_state.reserved = 0;
+        s_state.atyp = atyp;
+        s_state.bind_addr = addr;
+        s_state.bind_port = port;
 
-        struct socks5_server_hello s_hello;
-        s_hello.ver = 5;
-        s_hello.method = 0;
-        send(fd, (void*)&s_hello, sizeof(struct socks5_server_hello), 0);
+        ret = send(fd, (void*)&s_state, sizeof(struct socks5_server_reply), 0);
+        if (ret == -1) {
+                return -1;
+        }
+        return 0;
 
-        socks5_session->is_auth = 1;
 }
 
 // static int debug_tcp(int fd)
@@ -554,6 +560,26 @@ static int create_server2server_conn(int *fdptr, int atyp, u_int8_t *addr, u_int
         return 0;
 }
 
+static void start_exchange_data(int client_fd, int target_fd)
+{
+        int ret;
+        u_int8_t buf[4096];
+
+        do {
+                memset(buf, 0, 4096);
+                ret = recv(client_fd, buf, 4096, 0);
+                if (ret == 0) { /* prevent close connection */
+                        return;
+                }
+                printf("recv from client: %d bytes\n", ret);
+                send(target_fd, buf, ret, 0);
+                ret = recv(target_fd, buf, 4096, 0);
+                printf("recv from server: %d bytes\n", ret);
+                printf("data: %s\n", buf);
+                send(client_fd, buf, ret, 0);
+        } while (ret != 0);
+}
+
 static int start_unpack_packet_no_epl(int fd, void* reserved, struct socks5_session *socks5_session)
 {
         char buf[4096];
@@ -568,9 +594,6 @@ static int start_unpack_packet_no_epl(int fd, void* reserved, struct socks5_sess
                         socks5_handshake(fd, buf, socks5_session);
                 } else {
                         
-                        
-                        
-                        
                         if (buf[3] == 1) {
                                 struct next_req_ipv4 *next_req = (struct next_req_ipv4*)buf;
                                 int cur_conn_clientfd = 0;
@@ -582,7 +605,13 @@ static int start_unpack_packet_no_epl(int fd, void* reserved, struct socks5_sess
                                 ret = create_server2server_conn(&cur_conn_clientfd, next_req->atyp, next_req->dest, next_req->port);
 
                                 if (ret == 0) {
+                                        socks5_send_connstate(fd, 0, next_req->atyp, next_req->dest, 
+                                                next_req->port);
+                                        
+                                        start_exchange_data(fd, cur_conn_clientfd);
+                                        close(cur_conn_clientfd);
 
+                                        
                                 }
                         }
                         
