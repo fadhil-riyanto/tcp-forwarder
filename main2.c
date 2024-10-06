@@ -21,6 +21,7 @@
 #include <sys/wait.h>
 #include <pthread.h>
 #include <stdint.h>
+#include <stddef.h>
 
 #include "config.h"
 
@@ -470,18 +471,73 @@ static int socks5_handshake(int fd, char* buf, struct socks5_session *socks5_ses
         socks5_session->is_auth = 1;
 }
 
+// static int socks5_send_connstate(int fd, u_int8_t state, u_int8_t atyp, u_int8_t *addr, uint16_t port)
+// {
+//         u_int8_t emergencyipv4[4] = {
+//                 addr[0], addr[1], addr[2], addr[3]
+//         };
+
+//         int ret = 0;
+//         struct socks5_server_reply s_state;
+//         s_state.ver = 5;
+//         s_state.rep = state;
+//         s_state.reserved = 0;
+//         s_state.atyp = atyp;
+//         s_state.bind_addr = emergencyipv4;
+//         s_state.bind_port = port;
+
+//         ret = send(fd, (void*)&s_state, sizeof(struct socks5_server_reply), 0);
+//         if (ret == -1) {
+//                 return -1;
+//         }
+//         return 0;
+
+// }
+
+// static int socks5_send_connstate(int fd, u_int8_t state, u_int8_t atyp, u_int8_t *addr, uint16_t port)
+// {
+//         int ret = 0;
+//         size_t addr_off, total_send_len;
+//         char buf[128];
+
+//         struct socks5_server_reply s_state;
+//         s_state.ver = 5;
+//         s_state.rep = state;
+//         s_state.reserved = 0;
+//         s_state.atyp = atyp;
+
+//         addr_off = offsetof(struct socks5_server_reply, bind_addr);
+//         memcpy(buf, &s_state, addr_off);
+//         memcpy(buf + addr_off, addr, 4);
+//         memcpy(buf + addr_off + 4, &port, 2);
+//         total_send_len = addr_off + 4 + 2;
+
+//         ret = send(fd, buf, total_send_len, 0);
+//         if (ret == -1) {
+//                 return -1;
+//         }
+//         return 0;
+
+// }
+
 static int socks5_send_connstate(int fd, u_int8_t state, u_int8_t atyp, u_int8_t *addr, uint16_t port)
 {
         int ret = 0;
+        size_t addr_off, total_send_len;
+        char buf[128];
+
         struct socks5_server_reply s_state;
         s_state.ver = 5;
         s_state.rep = state;
         s_state.reserved = 0;
         s_state.atyp = atyp;
-        s_state.bind_addr = addr;
-        s_state.bind_port = port;
 
-        ret = send(fd, (void*)&s_state, sizeof(struct socks5_server_reply), 0);
+        memcpy(buf, &s_state, 4);
+        memcpy(buf + 4, addr, 4);
+        memcpy(buf + 4 + 4, &port, 2);
+        total_send_len = 4 + 4 + 2;
+
+        ret = send(fd, buf, total_send_len, 0);
         if (ret == -1) {
                 return -1;
         }
@@ -504,6 +560,7 @@ static int start_unpack_packet(int fd, void* reserved, struct socks5_session *so
                 char buf[3];
                 ret = read(fd, buf, 3);
                 if (ret == 0) {
+                        
                         return 0;
                 }
                 socks5_handshake(fd, buf, socks5_session);
@@ -560,30 +617,49 @@ static int create_server2server_conn(int *fdptr, int atyp, u_int8_t *addr, u_int
         return 0;
 }
 
-static void start_exchange_data(int client_fd, int target_fd)
+/* return
+ * 0: no problem
+ * 1: conn closed by client
+ * 2: recv client error
+*/
+
+static int start_exchange_data(int client_fd, int target_fd)
 {
         int ret;
         u_int8_t buf[4096];
 
         do {
+                printf("will loop\n");
                 memset(buf, 0, 4096);
+
                 ret = recv(client_fd, buf, 4096, 0);
-                if (ret == 0) { /* prevent close connection */
-                        return;
+                printf("dataret: %d\n", ret);
+                if (ret == -1) {
+                        perror("recv client");
+                        printf("clientfd %d\n", errno);
+                        return 2;
+                } 
+                if (ret == 0) {
+                        break;
                 }
+
                 printf("recv from client: %d bytes\n", ret);
                 send(target_fd, buf, ret, 0);
                 ret = recv(target_fd, buf, 4096, 0);
                 printf("recv from server: %d bytes\n", ret);
-                printf("data: %s\n", buf);
-                send(client_fd, buf, ret, 0);
+                // printf("data: %s\n", buf);
+                send(client_fd, buf, ret, MSG_DONTWAIT);
+                close(client_fd);
         } while (ret != 0);
+
+        return 0;
 }
 
 static int start_unpack_packet_no_epl(int fd, void* reserved, struct socks5_session *socks5_session)
 {
         char buf[4096];
         int ret = 0;
+        int exc_ret = 0;
 
         do {
                 ret = read(fd, buf, 4096);
@@ -608,8 +684,12 @@ static int start_unpack_packet_no_epl(int fd, void* reserved, struct socks5_sess
                                         socks5_send_connstate(fd, 0, next_req->atyp, next_req->dest, 
                                                 next_req->port);
                                         
-                                        start_exchange_data(fd, cur_conn_clientfd);
-                                        close(cur_conn_clientfd);
+                                        exc_ret = start_exchange_data(fd, cur_conn_clientfd);
+                                        if (exc_ret == 1) {
+                                                close(cur_conn_clientfd);
+                                                close(fd);
+                                                return 0;
+                                        }
 
                                         
                                 }
@@ -635,6 +715,9 @@ static void* start_private_conn_no_epl(void *priv_conn_detailsptr)
 
         int current_fd = priv_conn_details->acceptfd;
         int ret = start_unpack_packet_no_epl(current_fd, NULL, &socks5_session);
+        if (ret == 0) {
+                printf("connection closed\n");
+        }
 }
 
 static void* start_private_conn(void *priv_conn_detailsptr)
