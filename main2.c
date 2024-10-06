@@ -658,6 +658,7 @@ static int start_exchange_data(int client_fd, int target_fd)
         const u_int8_t *bufptr;
 
         do {
+                printf("start sending\n");
                 memset(buf, 0, 4096);
                 
                 fcntl(client_fd, F_SETFL, O_NONBLOCK);
@@ -677,7 +678,7 @@ readbuf:
                                 close(client_fd);
                                 return 0;
                         }
-                        perror("recv client");
+                        perror("recv x`client");
                         printf("clientfd errno %d\n", errno);
                         return 2;
                 } 
@@ -726,17 +727,20 @@ readbuf_server:
                 } else {
                         // *srvbuf = *srvbuf + ret;
                         // total_srv_read += ret;
-                        send(client_fd, srvbuf, ret, 0);
+                        ret = send(client_fd, srvbuf, ret, 0);
+
+                        if (ret == -1) {
+                                perror("send() to client from srv");
+                        }
                         goto readbuf_server;
                 }
 
-                printf("recv from server: %d bytes\n", total_srv_read);
 
                 // ret = recv(target_fd, buf, 4096, 0);
                 // printf("recv from server: %d bytes\n", ret);
                 // // printf("data: %s\n", buf);
                 // send(client_fd, buf, ret, MSG_DONTWAIT);
-                // close(client_fd);
+                close(client_fd);
         } while (ret != 0);
 
         return 0;
@@ -804,6 +808,7 @@ static void* start_private_conn_no_epl(void *priv_conn_detailsptr)
         int ret = start_unpack_packet_no_epl(current_fd, NULL, &socks5_session);
         if (ret == 0) {
                 printf("connection closed\n");
+                
         }
 }
 
