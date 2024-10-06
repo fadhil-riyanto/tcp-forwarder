@@ -22,6 +22,7 @@
 #include <pthread.h>
 #include <stdint.h>
 #include <stddef.h>
+#include <fcntl.h>
 
 #include "config.h"
 
@@ -617,6 +618,29 @@ static int create_server2server_conn(int *fdptr, int atyp, u_int8_t *addr, u_int
         return 0;
 }
 
+// static int read_fd(int fd, u_int8_t *buf, size_t sizeofbuf, size_t sizeof_read)
+// {
+//         int ret = 0;
+// read_again:
+//         ret = read(fd, buf, sizeofbuf);
+//         if (ret < 0) {
+//                 ret = errno;
+//                 perror("read");
+//                 close(fd);
+//                 return ret;
+//         }
+
+//         if (ret == 0) {
+//                 close(fd);
+//                 return 0;
+//         }
+//         if (ret != 0) {
+
+//                 goto read_again;
+//         }
+
+// }
+
 /* return
  * 0: no problem
  * 1: conn closed by client
@@ -626,30 +650,93 @@ static int create_server2server_conn(int *fdptr, int atyp, u_int8_t *addr, u_int
 static int start_exchange_data(int client_fd, int target_fd)
 {
         int ret;
+        int read_ret;
+        int total_send_srv;
         u_int8_t buf[4096];
+        u_int8_t srvbuf[4096];
+        int total_srv_read = 0;
+        const u_int8_t *bufptr;
 
         do {
-                printf("will loop\n");
                 memset(buf, 0, 4096);
+                
+                fcntl(client_fd, F_SETFL, O_NONBLOCK);
 
+                /* recv data from socket client */
+
+readbuf:
                 ret = recv(client_fd, buf, 4096, 0);
-                printf("dataret: %d\n", ret);
+                
                 if (ret == -1) {
+                        ret = errno;
+
+                        if (errno == 11) {
+                                goto readbuf;
+                        }
+                        if (errno == 9) {
+                                close(client_fd);
+                                return 0;
+                        }
                         perror("recv client");
-                        printf("clientfd %d\n", errno);
+                        printf("clientfd errno %d\n", errno);
                         return 2;
                 } 
-                if (ret == 0) {
-                        break;
-                }
 
                 printf("recv from client: %d bytes\n", ret);
-                send(target_fd, buf, ret, 0);
-                ret = recv(target_fd, buf, 4096, 0);
-                printf("recv from server: %d bytes\n", ret);
-                // printf("data: %s\n", buf);
-                send(client_fd, buf, ret, MSG_DONTWAIT);
-                close(client_fd);
+
+do_send_target:
+                read_ret = ret;
+                // bufptr = buf;
+                
+                ret = send(target_fd, buf, ret, 0);
+                if (ret == -1) {
+                        perror("send() target server");
+                }
+
+                if ((read_ret - ret) != 0) {
+
+                        *buf = *buf + ret;
+                        goto do_send_target;
+                }
+
+                /* read response from server */
+                
+readbuf_server:
+                memset(srvbuf, 0, 4096);
+                *srvbuf = 0;
+                ret = recv(target_fd, srvbuf, sizeof(srvbuf), 0);
+                
+                if (ret == -1) {
+                        ret = errno;
+
+                        if (errno == 11) {
+                                goto readbuf_server;
+                        }
+                        if (errno == 9) {
+                                close(client_fd);
+                                return 0;
+                        }
+                        perror("recv server");
+                        printf("serverfd errno %d\n", errno);
+                        return 2;
+                } 
+
+                if (ret == 0) {
+                        close(target_fd);
+                } else {
+                        // *srvbuf = *srvbuf + ret;
+                        // total_srv_read += ret;
+                        send(client_fd, srvbuf, ret, 0);
+                        goto readbuf_server;
+                }
+
+                printf("recv from server: %d bytes\n", total_srv_read);
+
+                // ret = recv(target_fd, buf, 4096, 0);
+                // printf("recv from server: %d bytes\n", ret);
+                // // printf("data: %s\n", buf);
+                // send(client_fd, buf, ret, MSG_DONTWAIT);
+                // close(client_fd);
         } while (ret != 0);
 
         return 0;
