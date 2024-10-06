@@ -1,6 +1,7 @@
 
 #include <asm-generic/socket.h>
 #include <signal.h>
+#include <signal.h>
 #include <stdio.h>
 #include <string.h>
 #include <getopt.h>
@@ -249,7 +250,11 @@ static int create_sock_ret_fd(struct sockaddr_storage *ss_addr)
 static void signal_cb(int signum)
 {
         printf("signal detected, exiting...\n");
-g_need_exit = 1;
+
+        if (signum == SIGINT) {
+                g_need_exit = 1;
+        }
+
 
 }
 
@@ -266,6 +271,8 @@ static int server_reg_sigaction(void)
         if (ret < 0) {
                 return -1;
         }
+
+        ret = sigaction(SIGPIPE, &sa, NULL);
 
         return 0;
 
@@ -645,6 +652,7 @@ static int create_server2server_conn(int *fdptr, int atyp, u_int8_t *addr, u_int
  * 0: no problem
  * 1: conn closed by client
  * 2: recv client error
+ * 3: client close connection
 */
 
 static int start_exchange_data(int client_fd, int target_fd)
@@ -657,11 +665,13 @@ static int start_exchange_data(int client_fd, int target_fd)
         int total_srv_read = 0;
         const u_int8_t *bufptr;
 
+        int sd, v;
+
         do {
                 printf("start sending\n");
                 memset(buf, 0, 4096);
                 
-                fcntl(client_fd, F_SETFL, O_NONBLOCK);
+                // fcntl(client_fd, F_SETFL, O_NONBLOCK);
 
                 /* recv data from socket client */
 
@@ -701,7 +711,8 @@ do_send_target:
                 }
 
                 /* read response from server */
-                
+
+
 readbuf_server:
                 memset(srvbuf, 0, 4096);
                 *srvbuf = 0;
@@ -727,10 +738,12 @@ readbuf_server:
                 } else {
                         // *srvbuf = *srvbuf + ret;
                         // total_srv_read += ret;
-                        ret = send(client_fd, srvbuf, ret, 0);
+                        ret = send(client_fd, srvbuf, ret, MSG_NOSIGNAL);
 
                         if (ret == -1) {
                                 perror("send() to client from srv");
+                                close(client_fd);
+                                return 3;
                         }
                         goto readbuf_server;
                 }
