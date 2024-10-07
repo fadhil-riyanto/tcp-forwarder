@@ -182,6 +182,18 @@ struct socks5_session {
         int is_auth;
 };
 
+struct fd_bridge {
+        int client_fd;
+        int target_fd;
+
+        pthread_mutex_t mutex;
+        u_int8_t need_exit;
+
+        pthread_t client2srv_pthread;
+        pthread_t srv2client_pthread;
+        
+};
+
 volatile int g_need_exit = 0;
 
 static void review_config(struct runtime_opts *r_opts)
@@ -780,6 +792,142 @@ readbuf_server:
         return 0;
 }
 
+/* todo
+ * read from client
+ * send it to the server
+ * read again from client
+ * send it to the server
+
+ * didnt care what protocol used
+
+ return 
+ * -1 on error
+*/
+
+
+static int start_exchange_data1(int client_fd, int target_fd)
+{
+
+        u_int8_t buf[4096];
+        int client_ret;
+        int srv_ret;
+        int general_ret;
+
+start_read1:
+        memset(buf, 0, 4096);
+        printf("b1\n");
+        
+        client_ret = recv(client_fd, buf, 4096, 0);
+        if (client_ret == -1) {
+                perror("recv from client socks5");
+        } 
+        printf("%d\n", client_ret);
+        
+        if (client_ret != 0) {
+                printf("b2\n");
+                srv_ret = send(target_fd, buf, client_ret, 0);
+                if (srv_ret == -1) {
+                        perror("send from target server");
+                        close(target_fd);
+                }
+        }
+
+        memset(buf, 0, 4096);
+        
+        printf("b3\n");
+        srv_ret = recv(target_fd, buf, 4096, 0);
+        if (client_ret == -1) {
+                perror("recv from target server");
+        }
+
+        printf("b4\n");
+        client_ret = send(client_fd, buf, srv_ret, MSG_NOSIGNAL);
+        if (client_ret == -1) {
+                general_ret = errno;
+
+                // if (general_ret == )
+                perror("send to client socks5");
+                close(client_fd);
+                return -1;
+        } 
+        goto start_read1;
+        
+}
+
+static void* start_exchange_data2_client2srv(void *fd_bridgeptr)
+{
+        struct fd_bridge *fd_bridge = (struct fd_bridge*)fd_bridgeptr;
+        int client_ret;
+        int srv_ret;
+        u_int8_t buf[4096];
+
+        while (1) {
+                memset(buf, 0, 4096);
+                client_ret = recv(fd_bridge->client_fd, buf, 4096, 0);
+                if (client_ret == -1) {
+                        perror("client2srv recv:");
+                } else {
+                        srv_ret = send(fd_bridge->target_fd, buf, client_ret, 0);
+                        if (srv_ret == -1) {
+                                perror("client2srv send:");
+                        }
+                }
+
+                
+                usleep(100);
+                
+        }
+
+}
+
+static void* start_exchange_data2_srv2client(void *fd_bridgeptr)
+{
+        struct fd_bridge *fd_bridge = (struct fd_bridge*)fd_bridgeptr;
+        int client_ret;
+        int srv_ret;
+        u_int8_t buf[4096];
+
+        while (1) {
+                memset(buf, 0, 4096);
+                client_ret = recv(fd_bridge->target_fd, buf, 4096, 0);
+                if (client_ret == -1) {
+                        perror("srv2client recv:");
+                } else {
+                        srv_ret = send(fd_bridge->client_fd, buf, client_ret, 0);
+                        if (srv_ret == -1) {
+                                perror("srv2client send:");
+                        }
+                }
+
+                usleep(100);
+        }
+        
+}
+
+static int start_exchange_data2(int client_fd, int target_fd)
+{
+        struct fd_bridge fd_bridge;
+        fd_bridge.need_exit = 0;
+        fd_bridge.client_fd = client_fd;
+        fd_bridge.target_fd = target_fd;
+
+        pthread_mutex_init(&fd_bridge.mutex, NULL);
+
+        pthread_create(&fd_bridge.client2srv_pthread, 
+                0, start_exchange_data2_client2srv, (void*)&fd_bridge);
+
+        pthread_create(&fd_bridge.srv2client_pthread, 
+                0, start_exchange_data2_srv2client, (void*)&fd_bridge);
+
+        while (!(fd_bridge.need_exit == 1)) {
+                usleep(100);
+        }
+        
+
+        pthread_mutex_destroy(&fd_bridge.mutex);
+
+}
+
 static int start_unpack_packet_no_epl(int fd, void* reserved, struct socks5_session *socks5_session)
 {
         char buf[4096];
@@ -809,7 +957,7 @@ static int start_unpack_packet_no_epl(int fd, void* reserved, struct socks5_sess
                                         socks5_send_connstate(fd, 0, next_req->atyp, next_req->dest, 
                                                 next_req->port);
                                         
-                                        exc_ret = start_exchange_data(fd, cur_conn_clientfd);
+                                        exc_ret = start_exchange_data2(fd, cur_conn_clientfd);
                                         if (exc_ret == 1) {
                                                 close(cur_conn_clientfd);
                                                 close(fd);
