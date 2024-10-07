@@ -606,10 +606,11 @@ static int create_server2server_conn(int *fdptr, int atyp, u_int8_t *addr, u_int
                 sprintf(buf, "%d.%d.%d.%d", (u_int8_t)addr[0], (u_int8_t)addr[1], (u_int8_t)addr[2], (u_int8_t)addr[3]);
 
                 serv_addr.sin_addr.s_addr = inet_addr(buf);
+                printf("contacting: %s\n", buf);
                 free(buf);
         }
         
-        serv_addr.sin_port = htons(8000);
+        serv_addr.sin_port = port;
         serv_addr.sin_family = AF_INET;
 
         socklen_t len = sizeof(struct sockaddr_in);
@@ -658,6 +659,7 @@ static int create_server2server_conn(int *fdptr, int atyp, u_int8_t *addr, u_int
 static int start_exchange_data(int client_fd, int target_fd)
 {
         int ret;
+        int client_last_byte;
         int read_ret;
         int total_send_srv;
         u_int8_t buf[4096];
@@ -668,16 +670,18 @@ static int start_exchange_data(int client_fd, int target_fd)
         int sd, v;
 
         do {
-                printf("start sending\n");
-                memset(buf, 0, 4096);
+                
                 
                 // fcntl(client_fd, F_SETFL, O_NONBLOCK);
 
                 /* recv data from socket client */
 
 readbuf:
+                printf("start sending\n");
+                memset(buf, 0, 4096);
                 ret = recv(client_fd, buf, 4096, 0);
-                
+                client_last_byte = ret;
+
                 if (ret == -1) {
                         ret = errno;
 
@@ -688,27 +692,50 @@ readbuf:
                                 close(client_fd);
                                 return 0;
                         }
-                        perror("recv x`client");
+                        perror("recv client");
                         printf("clientfd errno %d\n", errno);
                         return 2;
                 } 
 
-                printf("recv from client: %d bytes\n", ret);
+                if (ret == 0) {
+                        close(client_fd);
+                } else {
+                        ret = send(target_fd, buf, ret, 0);
 
-do_send_target:
-                read_ret = ret;
-                // bufptr = buf;
+                        if (ret == -1) {
+                                perror("send() client to srv error");
+                                close(target_fd);
+                                return 3;
+                        }
+
+                        int actuall_off = (client_last_byte - 1);
+                        // printf("ended by newline %c aaa", (buf[actuall_off]));
+                        if (buf[actuall_off - 3] == '\r' && buf[actuall_off - 2] == '\n' && buf[actuall_off - 1] == '\r' && buf[actuall_off] == '\n') {
+                                /* pass*/
+                                printf("ended by newline\n");
+                        } else {
+                                goto readbuf;
+                        }
+                        
+                }
+
+                // printf("recv from client: %d bytes\n", ret);
+                // printf("recv data: %s\n", buf);
                 
-                ret = send(target_fd, buf, ret, 0);
-                if (ret == -1) {
-                        perror("send() target server");
-                }
+// do_send_target:
+                // read_ret = ret;
+                // // bufptr = buf;
+                
+                // ret = send(target_fd, buf, ret, 0);
+                // if (ret == -1) {
+                //         perror("send() target server");
+                // }
 
-                if ((read_ret - ret) != 0) {
+                // if ((read_ret - ret) != 0) {
 
-                        *buf = *buf + ret;
-                        goto do_send_target;
-                }
+                //         *buf = *buf + ret;
+                //         goto do_send_target;
+                // }
 
                 /* read response from server */
 
@@ -747,12 +774,6 @@ readbuf_server:
                         }
                         goto readbuf_server;
                 }
-
-
-                // ret = recv(target_fd, buf, 4096, 0);
-                // printf("recv from server: %d bytes\n", ret);
-                // // printf("data: %s\n", buf);
-                // send(client_fd, buf, ret, MSG_DONTWAIT);
                 close(client_fd);
         } while (ret != 0);
 
@@ -794,15 +815,8 @@ static int start_unpack_packet_no_epl(int fd, void* reserved, struct socks5_sess
                                                 close(fd);
                                                 return 0;
                                         }
-
-                                        
                                 }
                         }
-                        
-                        // if1
-                        // u_int8_t test = 128;
-
-                        
                 }
         }while (ret != 0);
 }
@@ -860,7 +874,6 @@ static void* start_private_conn(void *priv_conn_detailsptr)
                                                 close(current_fd);
                                                 uninst_th_for_fd(srv_ctx->th_pool, current_fd);
                                         }
-                                        
                                 }
                         }
                 }
@@ -1110,11 +1123,7 @@ static int parseopt(int argc, char **argv, struct runtime_opts *r_opts)
                         r_opts->addr = strdup(optarg);
                         break;
                 }
-                
-
         }
-
-        
 }
 
 int main(int argc, char **argv)

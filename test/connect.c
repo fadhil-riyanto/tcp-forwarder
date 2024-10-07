@@ -14,8 +14,8 @@ int main(int argc, char *argv)
         struct sockaddr_in serv_addr;
         memset(&serv_addr, 0, sizeof(struct sockaddr_in));
 
-        serv_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
-        serv_addr.sin_port = htons(8000);
+        serv_addr.sin_addr.s_addr = inet_addr("93.184.215.14");
+        serv_addr.sin_port = htons(443);
         serv_addr.sin_family = AF_INET;
 
         socklen_t len = sizeof(struct sockaddr_in);
