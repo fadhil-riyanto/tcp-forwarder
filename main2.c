@@ -660,7 +660,7 @@ static int create_server2server_conn(int *fdptr, int atyp, u_int8_t *addr, u_int
                 perror("connect()");
                 log_error("errno: %d", ret);
 
-                if (ret == 101) {
+                if (ret == 111) {
                         return 3;
                 }
                 // return -1;
