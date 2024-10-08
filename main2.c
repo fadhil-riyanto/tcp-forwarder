@@ -25,6 +25,12 @@
 #include <stddef.h>
 #include <fcntl.h>
 
+#define ENABLE_DEBUG_FN
+
+#ifdef ENABLE_DEBUG_FN
+#define dbg(x) printf("%s\n", x);
+#endif
+
 #include "config.h"
 
 #define dbgchr(x) log_info("%c", x)
@@ -38,6 +44,11 @@ enum tcpf_mode {
         TCPF_SERVER,
         TCPF_CLIENT
 };
+
+// enum incoming_conn_mode {
+//         srv2client,
+//         client2srv
+// }
 
 struct poll_queue {
         pthread_mutex_t lock;
@@ -185,6 +196,8 @@ struct socks5_session {
 struct fd_bridge {
         int client_fd;
         int target_fd;
+        int fd_bridge_epfd;
+        struct epoll_event *events;
 
         pthread_mutex_t mutex;
         u_int8_t need_exit;
@@ -854,52 +867,124 @@ start_read1:
         
 }
 
+static void _start_exchange_data2_epinit(struct fd_bridge *fd_bridge)
+{
+        fd_bridge->fd_bridge_epfd = epoll_create1(0);
+}
+
+static void _start_exchange_data2_epfd_install(struct fd_bridge *fd_bridge, int fd)
+{
+        struct epoll_event ev;
+
+        ev.data.fd = fd;
+        ev.events = EPOLLIN;
+
+        epoll_ctl(fd_bridge->fd_bridge_epfd, EPOLL_CTL_ADD, fd, &ev);
+}
+
+static void _start_exchange_data2_epfd_uninstall(struct fd_bridge *fd_bridge, int fd)
+{
+        struct epoll_event ev;
+
+        ev.data.fd = fd;
+        ev.events = EPOLLIN;
+
+        epoll_ctl(fd_bridge->fd_bridge_epfd, EPOLL_CTL_DEL, fd, &ev);
+}
+
 static void* start_exchange_data2_client2srv(void *fd_bridgeptr)
 {
         struct fd_bridge *fd_bridge = (struct fd_bridge*)fd_bridgeptr;
         int client_ret;
         int srv_ret;
         u_int8_t buf[4096];
+        int event_ret = 0;
+
+        _start_exchange_data2_epfd_install(fd_bridge, fd_bridge->client_fd);
 
         while (1) {
-                memset(buf, 0, 4096);
-                client_ret = recv(fd_bridge->client_fd, buf, 4096, 0);
-                if (client_ret == -1) {
-                        perror("client2srv recv:");
-                } else {
-                        srv_ret = send(fd_bridge->target_fd, buf, client_ret, 0);
-                        if (srv_ret == -1) {
-                                perror("client2srv send:");
+                printf("receiving\n");
+
+                event_ret = epoll_wait(fd_bridge->fd_bridge_epfd, fd_bridge->events, 
+                        THREAD_MAX_QUEUE_EVENTS, 1000);
+
+                for(int i = 0; i < event_ret; i++) {
+
+                        if (fd_bridge->events[i].data.fd == fd_bridge->client_fd) {
+                                memset(buf, 0, 4096);
+
+                                client_ret = recv(fd_bridge->events[i].data.fd, buf, 4096, 0);
+
+                                if (client_ret == 0) {
+                                        log_warn("client is zero, closing connection");
+                                        close(fd_bridge->events[i].data.fd);
+                                        
+                                        _start_exchange_data2_epfd_uninstall(fd_bridgeptr,
+                                                fd_bridge->events[i].data.fd);
+                                        pthread_exit(&client_ret);
+                                }
+
+                                if (client_ret == -1) {
+                                        perror("client2srv recv:");
+                                        close(fd_bridge->client_fd);
+                                        pthread_exit(&client_ret);
+                                } else {
+                                        srv_ret = send(fd_bridge->target_fd, buf, client_ret, 0);
+                                        if (srv_ret == -1) {
+                                                perror("client2srv send:");
+                                        }
+                                }
+
                         }
                 }
-
-                
-                usleep(100);
-                
         }
-
 }
 
 static void* start_exchange_data2_srv2client(void *fd_bridgeptr)
 {
         struct fd_bridge *fd_bridge = (struct fd_bridge*)fd_bridgeptr;
-        int client_ret;
         int srv_ret;
+        int client_ret;
         u_int8_t buf[4096];
+        int event_ret = 0;
+
+        _start_exchange_data2_epfd_install(fd_bridge, fd_bridge->target_fd);
 
         while (1) {
-                memset(buf, 0, 4096);
-                client_ret = recv(fd_bridge->target_fd, buf, 4096, 0);
-                if (client_ret == -1) {
-                        perror("srv2client recv:");
-                } else {
-                        srv_ret = send(fd_bridge->client_fd, buf, client_ret, 0);
-                        if (srv_ret == -1) {
-                                perror("srv2client send:");
-                        }
-                }
 
-                usleep(100);
+                event_ret = epoll_wait(fd_bridge->fd_bridge_epfd, fd_bridge->events, 
+                        THREAD_MAX_QUEUE_EVENTS, 1000);
+
+                for(int i = 0; i < event_ret; i++) {
+                        
+                        if (fd_bridge->events[i].data.fd == fd_bridge->target_fd) {
+                                memset(buf, 0, 4096);
+
+                                srv_ret = recv(fd_bridge->events[i].data.fd, buf, 4096, 0);
+
+                                if (srv_ret == 0) {
+                                        log_warn("srv ret is zero, closing connection");
+                                        close(fd_bridge->events[i].data.fd);
+
+                                        _start_exchange_data2_epfd_uninstall(fd_bridgeptr, 
+                                                fd_bridge->events[i].data.fd);
+                                        pthread_exit(&client_ret);
+                                }
+                                if (srv_ret == -1) {
+                                        perror("srv2client recv:");
+                                } else {
+                                        client_ret = send(fd_bridge->client_fd, buf, srv_ret, 0);
+                                        if (client_ret == -1) {
+                                                perror("srv2client send:");
+                                                close(fd_bridge->client_fd);
+
+                                                pthread_exit(&client_ret);
+                                        }
+                                }
+                        }
+                        
+
+                }
         }
         
 }
@@ -911,6 +996,10 @@ static int start_exchange_data2(int client_fd, int target_fd)
         fd_bridge.client_fd = client_fd;
         fd_bridge.target_fd = target_fd;
 
+        fd_bridge.events = (struct epoll_event*)malloc(sizeof(struct epoll_event) * THREAD_MAX_QUEUE_EVENTS);
+
+        _start_exchange_data2_epinit(&fd_bridge);
+
         pthread_mutex_init(&fd_bridge.mutex, NULL);
 
         pthread_create(&fd_bridge.client2srv_pthread, 
@@ -920,11 +1009,12 @@ static int start_exchange_data2(int client_fd, int target_fd)
                 0, start_exchange_data2_srv2client, (void*)&fd_bridge);
 
         while (!(fd_bridge.need_exit == 1)) {
-                usleep(100);
+                printf("eh_eventloop running\n");
+                sleep(1);
         }
         
-
         pthread_mutex_destroy(&fd_bridge.mutex);
+        close(fd_bridge.fd_bridge_epfd);
 
 }
 
@@ -935,6 +1025,7 @@ static int start_unpack_packet_no_epl(int fd, void* reserved, struct socks5_sess
         int exc_ret = 0;
 
         do {
+                log_debug("sess");
                 ret = read(fd, buf, 4096);
                 if (ret == 0) {
                         return 0;
