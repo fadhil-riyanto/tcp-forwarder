@@ -903,8 +903,7 @@ static void* start_exchange_data2_client2srv(void *fd_bridgeptr)
         _start_exchange_data2_epfd_install(fd_bridge, fd_bridge->client_fd);
 
         while (1) {
-                printf("receiving\n");
-
+                // dbg("client2srv")
                 event_ret = epoll_wait(fd_bridge->fd_bridge_epfd, fd_bridge->events, 
                         THREAD_MAX_QUEUE_EVENTS, 1000);
 
@@ -921,6 +920,8 @@ static void* start_exchange_data2_client2srv(void *fd_bridgeptr)
                                         
                                         _start_exchange_data2_epfd_uninstall(fd_bridgeptr,
                                                 fd_bridge->events[i].data.fd);
+
+                                        fd_bridge->need_exit = 1;
                                         pthread_exit(&client_ret);
                                 }
 
@@ -951,7 +952,7 @@ static void* start_exchange_data2_srv2client(void *fd_bridgeptr)
         _start_exchange_data2_epfd_install(fd_bridge, fd_bridge->target_fd);
 
         while (1) {
-
+                // dbg("srv2client")
                 event_ret = epoll_wait(fd_bridge->fd_bridge_epfd, fd_bridge->events, 
                         THREAD_MAX_QUEUE_EVENTS, 1000);
 
@@ -961,13 +962,16 @@ static void* start_exchange_data2_srv2client(void *fd_bridgeptr)
                                 memset(buf, 0, 4096);
 
                                 srv_ret = recv(fd_bridge->events[i].data.fd, buf, 4096, 0);
-
+                                // printf("srv2clie %d\n", srv_ret);
                                 if (srv_ret == 0) {
                                         log_warn("srv ret is zero, closing connection");
                                         close(fd_bridge->events[i].data.fd);
 
                                         _start_exchange_data2_epfd_uninstall(fd_bridgeptr, 
                                                 fd_bridge->events[i].data.fd);
+
+                                        fd_bridge->need_exit = 1;
+
                                         pthread_exit(&client_ret);
                                 }
                                 if (srv_ret == -1) {
@@ -1008,10 +1012,13 @@ static int start_exchange_data2(int client_fd, int target_fd)
         pthread_create(&fd_bridge.srv2client_pthread, 
                 0, start_exchange_data2_srv2client, (void*)&fd_bridge);
 
-        while (!(fd_bridge.need_exit == 1)) {
+        while (fd_bridge.need_exit != 1) {
                 printf("eh_eventloop running\n");
                 sleep(1);
         }
+
+        pthread_join(fd_bridge.client2srv_pthread, NULL);
+        pthread_join(fd_bridge.srv2client_pthread, NULL);
         
         pthread_mutex_destroy(&fd_bridge.mutex);
         close(fd_bridge.fd_bridge_epfd);
