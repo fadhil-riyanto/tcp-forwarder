@@ -1081,6 +1081,8 @@ static void* start_private_conn_no_epl(void *priv_conn_detailsptr)
         int ret = start_unpack_packet_no_epl(current_fd, NULL, &socks5_session);
         if (ret == 0) {
                 printf("connection closed\n");
+                close(current_fd);
+                uninst_th_for_fd(srv_ctx->th_pool, current_fd);
                 
         }
 }
