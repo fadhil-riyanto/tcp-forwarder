@@ -1062,6 +1062,8 @@ static int start_unpack_packet_no_epl(int fd, void* reserved, struct socks5_sess
                                                 return 0;
                                         }
                                 }
+                        } else if (buf[3] == 4) {
+                                log_info("ipv6 conn requested");
                         }
                 }
         }while (ret != 0);
