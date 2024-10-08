@@ -617,6 +617,19 @@ static int start_unpack_packet(int fd, void* reserved, struct socks5_session *so
         return 1;
 }
 
+/*
+             o  X'00' succeeded
+             o  X'01' general SOCKS server failure
+             o  X'02' connection not allowed by ruleset
+             o  X'03' Network unreachable
+             o  X'04' Host unreachable
+             o  X'05' Connection refused
+             o  X'06' TTL expired
+             o  X'07' Command not supported
+             o  X'08' Address type not supported
+             o  X'09' to X'FF' unassigned
+*/
+
 static int create_server2server_conn(int *fdptr, int atyp, u_int8_t *addr, u_int16_t port)
 {
         int ret = 0;
@@ -642,8 +655,15 @@ static int create_server2server_conn(int *fdptr, int atyp, u_int8_t *addr, u_int
         ret = connect(tcpfd, (struct sockaddr*)&serv_addr, len);
 
         if (ret == -1) {
+                ret = errno;
+
                 perror("connect()");
-                return -1;
+                log_error("errno: %d", ret);
+
+                if (ret == 101) {
+                        return 3;
+                }
+                // return -1;
         }
 
         *fdptr = tcpfd;
@@ -1061,6 +1081,9 @@ static int start_unpack_packet_no_epl(int fd, void* reserved, struct socks5_sess
                                                 close(fd);
                                                 return 0;
                                         }
+                                } else {
+                                        socks5_send_connstate(fd, 3, next_req->atyp, next_req->dest, 
+                                                next_req->port);
                                 }
                         }
                 }
