@@ -131,6 +131,8 @@ struct server_ctx {
         struct epoll_fd_queue *epoll_fd_queue; /* probably unused */
 
         volatile int *need_exit_ptr;
+
+        int ip_ver;
 };
 
 struct start_private_conn_details {
@@ -249,6 +251,37 @@ static int setup_addr_storage(struct sockaddr_storage *ss_addr,
         return -1;
 }
 
+static int setup_addr_storage6(struct sockaddr_storage *ss_addr, 
+                              struct runtime_opts *r_opts)
+{
+        int ret = 0;
+        struct sockaddr_in6 *sockaddr_v6 = (struct sockaddr_in6*)ss_addr;
+
+        memset(sockaddr_v6, 0, sizeof(*sockaddr_v6));
+
+        ret = inet_pton(AF_INET6, r_opts->addr, &sockaddr_v6->sin6_addr);
+
+        if (ret == 1) {
+                sockaddr_v6->sin6_family = AF_INET6;
+                sockaddr_v6->sin6_port = htons(r_opts->listenport);
+                return 0;
+        }
+
+        return -1;
+}
+
+static int ip_version(const char *src) {
+        char buf[INET6_ADDRSTRLEN];
+
+        if (inet_pton(AF_INET, src, buf)) {
+                return 4;
+        } else if (inet_pton(AF_INET6, src, buf)) {
+                return 6;
+        }
+
+        return -1;
+}
+
 static int create_sock_ret_fd(struct sockaddr_storage *ss_addr)
 {
         socklen_t len = sizeof(struct sockaddr_in);
@@ -256,6 +289,40 @@ static int create_sock_ret_fd(struct sockaddr_storage *ss_addr)
         int fd;
 
         fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+        
+        if (fd < 0) {
+                perror("socket()");
+                return -1;
+        }
+
+        int value = 1;
+
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &value,  sizeof(len));
+
+        ret = bind(fd, (struct sockaddr*)ss_addr, len);
+        if (ret < 0) {
+                perror("bind()");
+                close(fd);
+                return -1;
+        }
+
+        ret = listen(fd, 256);
+        if (ret < 0) {
+                perror("listen()");
+                close(fd);
+                return -1;
+        }
+
+        return fd;
+}
+
+static int create_sock_ret_fd6(struct sockaddr_storage *ss_addr)
+{
+        socklen_t len = sizeof(struct sockaddr_in6);
+        int ret = 0;
+        int fd;
+
+        fd = socket(AF_INET6, SOCK_STREAM | SOCK_NONBLOCK, 0);
         
         if (fd < 0) {
                 perror("socket()");
@@ -1269,15 +1336,17 @@ static void* start_long_poll(void *srv_ctx_voidptr) {
         start_private_conn2thread.srv_ctx = srv_ctx;
 
         int n_ready_conn = 0;
-        char ip_str[INET_ADDRSTRLEN];
+        char ip_str[INET6_ADDRSTRLEN];
 
         struct epoll_event tcpfd_event_list[MAX_ACCEPT_WORKER]; /* monitor tcpfd for accept request */
         struct epoll_event ev;
         
         ev.data.fd = srv_ctx->tcpfd;
         ev.events = EPOLLIN;
-
+        
         struct sockaddr_in sockaddr;
+        struct sockaddr_in6 sockaddr6;
+
         socklen_t socksize = sizeof(struct sockaddr_in);
 
         epoll_ctl(srv_ctx->epoll_fd, EPOLL_CTL_ADD, srv_ctx->tcpfd, &ev);
@@ -1290,15 +1359,26 @@ static void* start_long_poll(void *srv_ctx_voidptr) {
                         for(int i = 0; i < n_ready_conn; i++) {
 
                                 /* need call func*/
-                                ret = accept(tcpfd_event_list[i].data.fd, 
-                                        (struct sockaddr*)&sockaddr, &socksize);
+                                if (srv_ctx->ip_ver == 4) {
+                                        ret = accept(tcpfd_event_list[i].data.fd, 
+                                                (struct sockaddr*)&sockaddr, &socksize);
+                                } else {
+                                        ret = accept(tcpfd_event_list[i].data.fd, 
+                                                (struct sockaddr*)&sockaddr6, &socksize);
+                                }
+                                
 
                                 /* start adding accept fd into watchlist */
                                 install_acceptfd_to_epoll(srv_ctx, ret);
                                 
                                 fd_sockaddr_list_link(srv_ctx->fd_sockaddr_list, sockaddr, ret);
 
-                                inet_ntop(AF_INET, &sockaddr.sin_addr, ip_str, INET_ADDRSTRLEN);
+                                if (srv_ctx->ip_ver == 4) {
+                                        inet_ntop(AF_INET, &sockaddr.sin_addr, ip_str, INET_ADDRSTRLEN);
+                                } else {
+                                        inet_ntop(AF_INET6, &sockaddr6.sin6_addr, ip_str, INET6_ADDRSTRLEN);
+                                }
+                                
                                 log_info("accepted [%d] %s", ret, ip_str);
 
 
@@ -1452,14 +1532,33 @@ static int main_server(struct runtime_opts *r_opts)
                 log_error("please use --listen port --addr yo.ur.i.p");
                 exit(-1);
         }
+        
+        if (ip_version(r_opts->addr) == 4) {
+                if (setup_addr_storage(&ss_addr, r_opts) == -1) {
+                        fprintf(stderr, "Invalid ip format\n");
+                }
 
-        if (setup_addr_storage(&ss_addr, r_opts) == -1) {
-                fprintf(stderr, "Invalid ip format\n");
+                if ((ret = create_sock_ret_fd(&ss_addr)) == -1) {
+                        fprintf(stderr, "socket failed\n");
+                }
+
+                srv_ctx->ip_ver = 4;
+        } else if (ip_version(r_opts->addr) == 6) {
+                if (setup_addr_storage6(&ss_addr, r_opts) == -1) {
+                        fprintf(stderr, "Invalid ip format\n");
+                }
+
+                if ((ret = create_sock_ret_fd6(&ss_addr)) == -1) {
+                        fprintf(stderr, "socket failed\n");
+                }
+
+                srv_ctx->ip_ver = 6;
+        } else {
+                log_fatal("IP unknown");
+                exit(-1);
         }
 
-        if ((ret = create_sock_ret_fd(&ss_addr)) == -1) {
-                fprintf(stderr, "socket failed\n");
-        }
+
 
         srv_ctx->tcpfd = ret;
 
