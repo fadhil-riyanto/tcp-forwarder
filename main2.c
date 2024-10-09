@@ -1,3 +1,4 @@
+#define LOG_USE_COLOR 1
 
 #include <asm-generic/socket.h>
 #include <signal.h>
@@ -26,6 +27,7 @@
 #include <fcntl.h>
 
 #define ENABLE_DEBUG_FN
+
 
 #ifdef ENABLE_DEBUG_FN
 #define dbg(x) printf("%s\n", x);
@@ -503,7 +505,7 @@ static inline char* ip2str(int cmd)
 static int socks5_handshake(int fd, char* buf, struct socks5_session *socks5_session)
 {
         struct socks5_client_hello *c_hello = (struct socks5_client_hello*)buf;
-        printf("SOCKS_HANDSHAKE version: %d; nmethods: %d; methods: %d\n", c_hello->ver, c_hello->nmethods, c_hello->methods);
+        log_debug("SOCKS_HANDSHAKE version: %d; nmethods: %d; methods: %d", c_hello->ver, c_hello->nmethods, c_hello->methods);
 
         struct socks5_server_hello s_hello;
         s_hello.ver = 5;
@@ -662,7 +664,7 @@ static int create_server2server_conn(int *fdptr, int atyp, u_int8_t *addr, u_int
                 sprintf(buf, "%d.%d.%d.%d", (u_int8_t)addr[0], (u_int8_t)addr[1], (u_int8_t)addr[2], (u_int8_t)addr[3]);
 
                 serv_addr.sin_addr.s_addr = inet_addr(buf);
-                printf("contacting: %s\n", buf);
+                log_info("contacting: %s", buf);
                 free(buf);
 
                 serv_addr.sin_port = port;
@@ -701,7 +703,7 @@ static int create_server2server_conn(int *fdptr, int atyp, u_int8_t *addr, u_int
 
                 ret = inet_pton(AF_INET6, buf, &serv_addr.sin6_addr);
                 if (ret == 1) {
-                        printf("contacting: %s\n", buf);
+                        log_info("contacting: %s", buf);
 
                         serv_addr.sin6_port = port;
                         serv_addr.sin6_family = AF_INET6;
@@ -1102,7 +1104,6 @@ static int start_exchange_data2(int client_fd, int target_fd)
                 0, start_exchange_data2_srv2client, (void*)&fd_bridge);
 
         while (fd_bridge.need_exit != 1) {
-                printf("eh_eventloop running\n");
                 sleep(1);
         }
 
@@ -1121,7 +1122,6 @@ static int start_unpack_packet_no_epl(int fd, void* reserved, struct socks5_sess
         int exc_ret = 0;
 
         do {
-                log_debug("sess");
                 ret = read(fd, buf, 4096);
                 if (ret == 0) {
                         return 0;
@@ -1134,7 +1134,7 @@ static int start_unpack_packet_no_epl(int fd, void* reserved, struct socks5_sess
                                 struct next_req_ipv4 *next_req = (struct next_req_ipv4*)buf;
                                 int cur_conn_clientfd = 0;
                                 
-                                printf("SOCKS_REQ ver: %c; CMD: %s; type: %s; ip: %u.%u.%u.%u:%d\n", buf[0], 
+                                log_debug("SOCKS_REQ ver: %c; CMD: %s; type: %s; ip: %u.%u.%u.%u:%d", buf[0], 
                                         cmd2str(next_req->cmd), ip2str(next_req->atyp), next_req->dest[0], next_req->dest[1], next_req->dest[2], next_req->dest[3],
                                         ntohs(next_req->port));
 
@@ -1158,7 +1158,7 @@ static int start_unpack_packet_no_epl(int fd, void* reserved, struct socks5_sess
                                 struct next_req_ipv6 *next_req = (struct next_req_ipv6*)buf;
                                 int cur_conn_clientfd = 0;
 
-                                printf("SOCKS_REQ ver: %c; CMD: %s; type: %s; ip: %02X%02X:%02X%02X:%02X%02X:%02X%02X:%02X%02X:%02X%02X:%02X%02X:%02X%02X; port %d\n", buf[0], 
+                                log_debug("SOCKS_REQ ver: %c; CMD: %s; type: %s; ip: %02X%02X:%02X%02X:%02X%02X:%02X%02X:%02X%02X:%02X%02X:%02X%02X:%02X%02X; port %d", buf[0], 
                                         cmd2str(next_req->cmd), ip2str(next_req->atyp), 
                                         /* ip section */
                                         next_req->dest[0], next_req->dest[1], next_req->dest[2], next_req->dest[3], 
@@ -1203,7 +1203,7 @@ static void* start_private_conn_no_epl(void *priv_conn_detailsptr)
         int current_fd = priv_conn_details->acceptfd;
         int ret = start_unpack_packet_no_epl(current_fd, NULL, &socks5_session);
         if (ret == 0) {
-                printf("connection closed\n");
+                log_info("connection closed");
                 close(current_fd);
                 uninst_th_for_fd(srv_ctx->th_pool, current_fd);
                 
@@ -1435,7 +1435,7 @@ static int main_server(struct runtime_opts *r_opts)
         /* link our ptr */
         srv_ctx->need_exit_ptr = &g_need_exit;
 
-        review_config(r_opts);
+        // review_config(r_opts);
 
         if (setup_addr_storage(&ss_addr, r_opts) == -1) {
                 fprintf(stderr, "Invalid ip format\n");
@@ -1452,7 +1452,7 @@ static int main_server(struct runtime_opts *r_opts)
         }
 
 
-        printf("server listening on %s:%d\n", r_opts->addr, r_opts->listenport);
+        log_info("server listening on %s:%d", r_opts->addr, r_opts->listenport);
 
         if ((ret = enter_eventloop(srv_ctx) == -1)) {
                 fprintf(stderr, "error eventloop\n");
