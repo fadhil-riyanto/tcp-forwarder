@@ -352,7 +352,7 @@ static int create_sock_ret_fd6(struct sockaddr_storage *ss_addr)
 
 static void signal_cb(int signum)
 {
-        printf("signal detected, exiting...\n");
+        printf("signal %d detected\n", signum);
 
         if (signum == SIGINT) {
                 g_need_exit = 1;
@@ -552,6 +552,8 @@ static inline char* cmd2str(int cmd)
         if (cmd == 3) {
                 return "udp";
         }
+
+        return NULL;
 }
 
 static inline char* ip2str(int cmd)
@@ -567,9 +569,11 @@ static inline char* ip2str(int cmd)
         if (cmd == 4) {
                 return "IPV6";
         }
+
+        return NULL;
 }
 
-static int socks5_handshake(int fd, char* buf, struct socks5_session *socks5_session)
+static void socks5_handshake(int fd, char* buf, struct socks5_session *socks5_session)
 {
         struct socks5_client_hello *c_hello = (struct socks5_client_hello*)buf;
         log_debug("SOCKS_HANDSHAKE version: %d; nmethods: %d; methods: %d", c_hello->ver, c_hello->nmethods, c_hello->methods);
@@ -1154,7 +1158,7 @@ static void* start_exchange_data2_srv2client(void *fd_bridgeptr)
         
 }
 
-static int start_exchange_data2(int client_fd, int target_fd)
+static void start_exchange_data2(int client_fd, int target_fd)
 {
         struct fd_bridge fd_bridge;
         fd_bridge.need_exit = 0;
@@ -1214,12 +1218,12 @@ static int start_unpack_packet_no_epl(int fd, void* reserved, struct socks5_sess
                                         socks5_send_connstate(fd, 0, next_req->atyp, next_req->dest, 
                                                 next_req->port);
                                         
-                                        exc_ret = start_exchange_data2(fd, cur_conn_clientfd);
-                                        if (exc_ret == 1) {
-                                                close(cur_conn_clientfd);
-                                                close(fd);
+                                        start_exchange_data2(fd, cur_conn_clientfd);
+                                        // if (exc_ret == 1) {
+                                        //         close(cur_conn_clientfd);
+                                        //         close(fd);
                                                 return 0;
-                                        }
+                                        // }
                                 } else {
                                         socks5_send_connstate(fd, 3, next_req->atyp, next_req->dest, 
                                                 next_req->port);
@@ -1243,12 +1247,12 @@ static int start_unpack_packet_no_epl(int fd, void* reserved, struct socks5_sess
                                         socks5_send_connstate(fd, 0, next_req->atyp, next_req->dest, 
                                                 next_req->port);
                                         
-                                        exc_ret = start_exchange_data2(fd, cur_conn_clientfd);
-                                        if (exc_ret == 1) {
-                                                close(cur_conn_clientfd);
-                                                close(fd);
+                                        start_exchange_data2(fd, cur_conn_clientfd);
+                                        // if (exc_ret == 1) {
+                                        //         close(cur_conn_clientfd);
+                                        //         close(fd);
                                                 return 0;
-                                        }
+                                        // }
                                 } else {
                                         socks5_send_connstate(fd, 3, next_req->atyp, next_req->dest, 
                                                 next_req->port);
@@ -1258,6 +1262,8 @@ static int start_unpack_packet_no_epl(int fd, void* reserved, struct socks5_sess
                         }
                 }
         }while (ret != 0);
+
+        return 0;
 }
 
 
