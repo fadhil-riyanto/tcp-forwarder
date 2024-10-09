@@ -1008,6 +1008,7 @@ static void* start_exchange_data2_client2srv(void *fd_bridgeptr)
                                 if (client_ret == 0) {
                                         log_warn("client is zero, closing connection");
                                         close(fd_bridge->events[i].data.fd);
+                                        close(fd_bridge->target_fd);
                                         
                                         _start_exchange_data2_epfd_uninstall(fd_bridgeptr,
                                                 fd_bridge->events[i].data.fd);
@@ -1019,6 +1020,7 @@ static void* start_exchange_data2_client2srv(void *fd_bridgeptr)
                                 if (client_ret == -1) {
                                         perror("client2srv recv:");
                                         close(fd_bridge->client_fd);
+                                        close(fd_bridge->target_fd);
                                         pthread_exit(&client_ret);
                                 } else {
                                         srv_ret = send(fd_bridge->target_fd, buf, client_ret, 0);
@@ -1057,6 +1059,7 @@ static void* start_exchange_data2_srv2client(void *fd_bridgeptr)
                                 if (srv_ret == 0) {
                                         log_warn("srv ret is zero, closing connection");
                                         close(fd_bridge->events[i].data.fd);
+                                        close(fd_bridge->client_fd);
 
                                         _start_exchange_data2_epfd_uninstall(fd_bridgeptr, 
                                                 fd_bridge->events[i].data.fd);
@@ -1424,6 +1427,14 @@ static int enter_eventloop(struct server_ctx *srv_ctx)
         return 0;
 }
 
+static int verify_config(struct runtime_opts *r_opts)
+{
+        if (r_opts->addr != NULL && r_opts->listenport != 0) {
+                return 1;
+        } 
+        return 0;
+}
+
 static int main_server(struct runtime_opts *r_opts)
 {
         int ret = 0;
@@ -1436,6 +1447,11 @@ static int main_server(struct runtime_opts *r_opts)
         srv_ctx->need_exit_ptr = &g_need_exit;
 
         // review_config(r_opts);
+        ret = verify_config(r_opts);
+        if (ret == 0) {
+                log_error("please use --listen port --addr yo.ur.i.p");
+                exit(-1);
+        }
 
         if (setup_addr_storage(&ss_addr, r_opts) == -1) {
                 fprintf(stderr, "Invalid ip format\n");
