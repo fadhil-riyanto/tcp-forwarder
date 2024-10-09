@@ -189,6 +189,15 @@ struct next_req_ipv4 {
         uint16_t port;
 };
 
+struct next_req_ipv6 {
+        u_int8_t version;
+        u_int8_t cmd;
+        u_int8_t reserved;
+        u_int8_t atyp;
+        u_int8_t dest[16];
+        uint16_t port;
+};
+
 struct socks5_session {
         int is_auth;
 };
@@ -557,7 +566,7 @@ static int socks5_send_connstate(int fd, u_int8_t state, u_int8_t atyp, u_int8_t
 {
         int ret = 0;
         size_t addr_off, total_send_len;
-        char buf[128];
+        char buf[512];
 
         struct socks5_server_reply s_state;
         s_state.ver = 5;
@@ -566,9 +575,17 @@ static int socks5_send_connstate(int fd, u_int8_t state, u_int8_t atyp, u_int8_t
         s_state.atyp = atyp;
 
         memcpy(buf, &s_state, 4);
-        memcpy(buf + 4, addr, 4);
-        memcpy(buf + 4 + 4, &port, 2);
-        total_send_len = 4 + 4 + 2;
+
+        if (atyp == 1) {
+                memcpy(buf + 4, addr, 4);
+                memcpy(buf + 4 + 4, &port, 2);
+                total_send_len = 4 + 4 + 2;
+        } else if (atyp == 4) {
+                memcpy(buf + 4, addr, 4);
+                memcpy(buf + 4 + 16, &port, 2);
+                total_send_len = 4 + 16 + 2;
+        }
+        
 
         ret = send(fd, buf, total_send_len, 0);
         if (ret == -1) {
@@ -633,12 +650,13 @@ static int start_unpack_packet(int fd, void* reserved, struct socks5_session *so
 static int create_server2server_conn(int *fdptr, int atyp, u_int8_t *addr, u_int16_t port)
 {
         int ret = 0;
-
-        int tcpfd = socket(AF_INET, SOCK_STREAM, 0);
-        struct sockaddr_in serv_addr;
-        memset(&serv_addr, 0, sizeof(struct sockaddr_in));
+        int tcpfd;
 
         if (atyp == 1) {
+                tcpfd = socket(AF_INET, SOCK_STREAM, 0);
+                struct sockaddr_in serv_addr;
+                memset(&serv_addr, 0, sizeof(struct sockaddr_in));
+                
                 char* buf = malloc(15);
                 memset(buf, 0, 15);
                 sprintf(buf, "%d.%d.%d.%d", (u_int8_t)addr[0], (u_int8_t)addr[1], (u_int8_t)addr[2], (u_int8_t)addr[3]);
@@ -646,27 +664,78 @@ static int create_server2server_conn(int *fdptr, int atyp, u_int8_t *addr, u_int
                 serv_addr.sin_addr.s_addr = inet_addr(buf);
                 printf("contacting: %s\n", buf);
                 free(buf);
+
+                serv_addr.sin_port = port;
+                serv_addr.sin_family = AF_INET;
+
+                socklen_t len = sizeof(struct sockaddr_in);
+                ret = connect(tcpfd, (struct sockaddr*)&serv_addr, len);
+
+                if (ret == -1) {
+                        ret = errno;
+
+                        perror("connect()");
+                        log_error("errno: %d", ret);
+
+                        if (ret == 111) {
+                                return 3;
+                        }
+                        // return -1;
+                }
+
+                *fdptr = tcpfd;
+        } else if (atyp == 4) {
+                tcpfd = socket(AF_INET6, SOCK_STREAM, 0);
+                struct sockaddr_in6 serv_addr;
+                memset(&serv_addr, 0, sizeof(struct sockaddr_in));
+                
+                char* buf = malloc(39);
+                memset(buf, 0, 15);
+                sprintf(buf, "%02X%02X:%02X%02X:%02X%02X:%02X%02X:%02X%02X:%02X%02X:%02X%02X:%02X%02X", 
+                        addr[0], addr[1], addr[2], addr[3], 
+                        addr[4], addr[5], addr[6], addr[7],
+                        addr[8], addr[9], addr[10], addr[11],
+                        addr[12], addr[13], addr[14], addr[15]);
+
+                // serv_addr.sin6_addr = inet_addr(buf);
+
+                ret = inet_pton(AF_INET6, buf, &serv_addr.sin6_addr);
+                if (ret == 1) {
+                        printf("contacting: %s\n", buf);
+
+                        serv_addr.sin6_port = port;
+                        serv_addr.sin6_family = AF_INET6;
+                        
+                        socklen_t len = sizeof(struct sockaddr_in6);
+                        ret = connect(tcpfd, (struct sockaddr*)&serv_addr, len);
+
+                        if (ret == -1) {
+                                ret = errno;
+
+                                perror("connect()");
+                                log_error("errno: %d", ret);
+
+                                if (ret == 111) {
+                                        return 3;
+                                }
+                                // return -1;
+                        }
+
+                        *fdptr = tcpfd;
+                }
+
+                free(buf);
+
+                
+
+                
+
+                
         }
         
-        serv_addr.sin_port = port;
-        serv_addr.sin_family = AF_INET;
+        
 
-        socklen_t len = sizeof(struct sockaddr_in);
-        ret = connect(tcpfd, (struct sockaddr*)&serv_addr, len);
-
-        if (ret == -1) {
-                ret = errno;
-
-                perror("connect()");
-                log_error("errno: %d", ret);
-
-                if (ret == 111) {
-                        return 3;
-                }
-                // return -1;
-        }
-
-        *fdptr = tcpfd;
+        
 
         return 0;
 }
@@ -1086,7 +1155,36 @@ static int start_unpack_packet_no_epl(int fd, void* reserved, struct socks5_sess
                                                 next_req->port);
                                 }
                         } else if (buf[3] == 4) {
-                                log_info("ipv6 conn requested");
+                                struct next_req_ipv6 *next_req = (struct next_req_ipv6*)buf;
+                                int cur_conn_clientfd = 0;
+
+                                printf("SOCKS_REQ ver: %c; CMD: %s; type: %s; ip: %02X%02X:%02X%02X:%02X%02X:%02X%02X:%02X%02X:%02X%02X:%02X%02X:%02X%02X; port %d\n", buf[0], 
+                                        cmd2str(next_req->cmd), ip2str(next_req->atyp), 
+                                        /* ip section */
+                                        next_req->dest[0], next_req->dest[1], next_req->dest[2], next_req->dest[3], 
+                                        next_req->dest[4], next_req->dest[5], next_req->dest[6], next_req->dest[7],
+                                        next_req->dest[8], next_req->dest[9], next_req->dest[10], next_req->dest[11],
+                                        next_req->dest[12], next_req->dest[13], next_req->dest[14], next_req->dest[15],
+                                        ntohs(next_req->port));
+
+                                ret = create_server2server_conn(&cur_conn_clientfd, next_req->atyp, next_req->dest, next_req->port);
+
+                                if (ret == 0) {
+                                        socks5_send_connstate(fd, 0, next_req->atyp, next_req->dest, 
+                                                next_req->port);
+                                        
+                                        exc_ret = start_exchange_data2(fd, cur_conn_clientfd);
+                                        if (exc_ret == 1) {
+                                                close(cur_conn_clientfd);
+                                                close(fd);
+                                                return 0;
+                                        }
+                                } else {
+                                        socks5_send_connstate(fd, 3, next_req->atyp, next_req->dest, 
+                                                next_req->port);
+                                }
+
+
                         }
                 }
         }while (ret != 0);
