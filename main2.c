@@ -1,3 +1,4 @@
+#include <netdb.h>
 #define LOG_USE_COLOR 1
 
 #include <asm-generic/socket.h>
@@ -750,6 +751,30 @@ static int start_unpack_packet(int fd, void* reserved, struct socks5_session *so
         return 1;
 }
 
+static char* get_str_pret(int atyp, u_int8_t *addr)
+{
+        if (atyp == 1) {
+                char* buf = malloc(15);
+                memset(buf, 0, 15);
+                sprintf(buf, "%d.%d.%d.%d", (u_int8_t)addr[0],
+                         (u_int8_t)addr[1], (u_int8_t)addr[2], (u_int8_t)addr[3]);
+
+                return buf;
+        } else if (atyp == 4) {
+                char* buf = malloc(39);
+                memset(buf, 0, 15);
+                sprintf(buf, "%02X%02X:%02X%02X:%02X%02X:%02X%02X:%02X%02X:%02X%02X:%02X%02X:%02X%02X", 
+                        addr[0], addr[1], addr[2], addr[3], 
+                        addr[4], addr[5], addr[6], addr[7],
+                        addr[8], addr[9], addr[10], addr[11],
+                        addr[12], addr[13], addr[14], addr[15]);
+
+                return buf;
+        } else {
+                return NULL;
+        }
+}
+
 /*
              o  X'00' succeeded
              o  X'01' general SOCKS server failure
@@ -763,7 +788,7 @@ static int start_unpack_packet(int fd, void* reserved, struct socks5_session *so
              o  X'09' to X'FF' unassigned
 */
 
-static int create_server2server_conn(int *fdptr, int atyp, u_int8_t *addr, u_int16_t port)
+static int create_server2server_conn(int *fdptr, int atyp, char* straddr, u_int16_t port)
 {
         int ret = 0;
         int tcpfd;
@@ -773,13 +798,11 @@ static int create_server2server_conn(int *fdptr, int atyp, u_int8_t *addr, u_int
                 struct sockaddr_in serv_addr;
                 memset(&serv_addr, 0, sizeof(struct sockaddr_in));
                 
-                char* buf = malloc(15);
-                memset(buf, 0, 15);
-                sprintf(buf, "%d.%d.%d.%d", (u_int8_t)addr[0], (u_int8_t)addr[1], (u_int8_t)addr[2], (u_int8_t)addr[3]);
+                
 
-                serv_addr.sin_addr.s_addr = inet_addr(buf);
-                log_info("contacting: %s", buf);
-                free(buf);
+                serv_addr.sin_addr.s_addr = inet_addr(straddr);
+                log_info("contacting: %s", straddr);
+                // free(buf);
 
                 serv_addr.sin_port = port;
                 serv_addr.sin_family = AF_INET;
@@ -805,19 +828,13 @@ static int create_server2server_conn(int *fdptr, int atyp, u_int8_t *addr, u_int
                 struct sockaddr_in6 serv_addr;
                 memset(&serv_addr, 0, sizeof(struct sockaddr_in));
                 
-                char* buf = malloc(39);
-                memset(buf, 0, 15);
-                sprintf(buf, "%02X%02X:%02X%02X:%02X%02X:%02X%02X:%02X%02X:%02X%02X:%02X%02X:%02X%02X", 
-                        addr[0], addr[1], addr[2], addr[3], 
-                        addr[4], addr[5], addr[6], addr[7],
-                        addr[8], addr[9], addr[10], addr[11],
-                        addr[12], addr[13], addr[14], addr[15]);
+                //
 
                 // serv_addr.sin6_addr = inet_addr(buf);
 
-                ret = inet_pton(AF_INET6, buf, &serv_addr.sin6_addr);
+                ret = inet_pton(AF_INET6, straddr, &serv_addr.sin6_addr);
                 if (ret == 1) {
-                        log_info("contacting: %s", buf);
+                        log_info("contacting: %s", straddr);
 
                         serv_addr.sin6_port = port;
                         serv_addr.sin6_family = AF_INET6;
@@ -840,19 +857,8 @@ static int create_server2server_conn(int *fdptr, int atyp, u_int8_t *addr, u_int
                         *fdptr = tcpfd;
                 }
 
-                free(buf);
-
-                
-
-                
-
                 
         }
-        
-        
-
-        
-
         return 0;
 }
 
@@ -1255,7 +1261,10 @@ static int start_unpack_packet_no_epl(int fd, void* reserved, struct socks5_sess
                                         cmd2str(next_req->cmd), ip2str(next_req->atyp), next_req->dest[0], next_req->dest[1], next_req->dest[2], next_req->dest[3],
                                         ntohs(next_req->port));
 
-                                ret = create_server2server_conn(&cur_conn_clientfd, next_req->atyp, next_req->dest, next_req->port);
+                                char *straddr = get_str_pret(next_req->atyp, next_req->dest);
+
+                                ret = create_server2server_conn(&cur_conn_clientfd, next_req->atyp, straddr, next_req->port);
+                                free(straddr);
 
                                 if (ret == 0) {
                                         socks5_send_connstate(fd, 0, next_req->atyp, next_req->dest, 
@@ -1284,7 +1293,10 @@ static int start_unpack_packet_no_epl(int fd, void* reserved, struct socks5_sess
                                         next_req->dest[12], next_req->dest[13], next_req->dest[14], next_req->dest[15],
                                         ntohs(next_req->port));
 
-                                ret = create_server2server_conn(&cur_conn_clientfd, next_req->atyp, next_req->dest, next_req->port);
+                                char *straddr = get_str_pret(next_req->atyp, next_req->dest);
+
+                                ret = create_server2server_conn(&cur_conn_clientfd, next_req->atyp, straddr, next_req->port);
+                                free(straddr);
 
                                 if (ret == 0) {
                                         socks5_send_connstate(fd, 0, next_req->atyp, next_req->dest, 
