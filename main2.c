@@ -202,6 +202,16 @@ struct next_req_ipv6 {
         uint16_t port;
 };
 
+struct next_req_domain {
+        u_int8_t version;
+        u_int8_t cmd;
+        u_int8_t reserved;
+        u_int8_t atyp;
+        u_int8_t *dest;
+        uint16_t port;
+        u_int8_t *_printable_dest;
+};
+
 struct socks5_session {
         int is_auth;
 };
@@ -225,6 +235,39 @@ volatile int g_need_exit = 0;
 static void review_config(struct runtime_opts *r_opts)
 {
         printf("socks5 server listen at %u\n", r_opts->listenport);
+}
+
+static void parse_domain_socks5_req(char* buf, struct next_req_domain *next_req_domain)
+{
+        u_int8_t domain_length = 0;
+
+        next_req_domain->version = buf[0];
+        next_req_domain->cmd = buf[1];
+        next_req_domain->reserved = 0;
+        next_req_domain->atyp = buf[3];
+
+        domain_length = buf[4];
+
+        next_req_domain->dest = (u_int8_t*)malloc(domain_length);
+        next_req_domain->_printable_dest = (u_int8_t*)malloc(domain_length + 1);
+
+        int i = 0;
+        for(; i < domain_length; i++) {
+                next_req_domain->dest[i] = buf[5 + i];
+                next_req_domain->_printable_dest[i] = buf[5 + i];
+        }
+        next_req_domain->_printable_dest[i] = '\0';
+
+        next_req_domain->port = ((uint16_t)buf[4 + domain_length + 2] << 8) | buf[4 + domain_length + 1];
+
+        // next_req_domain->port = buf[domain_length + 2];
+
+}
+
+static void free_domain_socks5_req(struct next_req_domain *next_req_domain)
+{
+        free(next_req_domain->_printable_dest);
+        free(next_req_domain->dest);
 }
 
 static void r_opts_clean(struct runtime_opts *r_opts)
@@ -1257,8 +1300,13 @@ static int start_unpack_packet_no_epl(int fd, void* reserved, struct socks5_sess
                                         socks5_send_connstate(fd, 3, next_req->atyp, next_req->dest, 
                                                 next_req->port);
                                 }
+                        } else if (buf[3] == 3) {
+                                struct next_req_domain next_req;
+                                parse_domain_socks5_req(buf, &next_req);
 
-
+                                log_debug("SOCKS_REQ ver: %c; CMD: %s; type: %s; domain: %s:%d", buf[0], 
+                                        cmd2str(next_req.cmd), ip2str(next_req.atyp), next_req._printable_dest,
+                                        ntohs(next_req.port));
                         }
                 }
         }while (ret != 0);
