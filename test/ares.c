@@ -21,18 +21,26 @@ int main()
 
         char buf[NI_MAXHOST];
 
-        req.ai_family = AF_INET6;
+        req.ai_family = AF_UNSPEC;
         req.ai_socktype = SOCK_DGRAM;
 
-        ret = getaddrinfo("google.com", NULL, &req, &res);
+        ret = getaddrinfo("fb.com", NULL, &req, &res);
         if (ret == 0) {
                 while (res) {
                         memset(buf, 0, NI_MAXHOST);
 
-                        ptr = &((struct sockaddr_in6*)res->ai_addr)->sin6_addr;
+                        if (res->ai_family == AF_INET6) {
+                                ptr = &((struct sockaddr_in6*)res->ai_addr)->sin6_addr;
                         
-                        inet_ntop(AF_INET6, ptr, buf, NI_MAXHOST);
-                        printf("%s\n", buf);
+                                inet_ntop(AF_INET6, ptr, buf, NI_MAXHOST);
+                                printf("%s\n", buf);
+                        } else if (res->ai_family == AF_INET) {
+                                ptr = &((struct sockaddr_in*)res->ai_addr)->sin_addr;
+                        
+                                inet_ntop(AF_INET, ptr, buf, NI_MAXHOST);
+                                printf("%s\n", buf);
+                        }
+                        
 
                         res = res->ai_next;
                 }
