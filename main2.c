@@ -211,6 +211,7 @@ struct next_req_domain {
         u_int8_t *dest;
         uint16_t port;
         u_int8_t *_printable_dest;
+        u_int8_t _domain_length;
 };
 
 struct socks5_session {
@@ -231,6 +232,12 @@ struct fd_bridge {
         
 };
 
+struct dns_resolve_result {
+        int atyp;
+        u_int8_t addrbuf[16]; /* ipv4 and ipv6 is allowed */
+        
+};
+
 volatile int g_need_exit = 0;
 
 static void review_config(struct runtime_opts *r_opts)
@@ -248,6 +255,7 @@ static void parse_domain_socks5_req(char* buf, struct next_req_domain *next_req_
         next_req_domain->atyp = buf[3];
 
         domain_length = buf[4];
+        next_req_domain->_domain_length = domain_length;
 
         next_req_domain->dest = (u_int8_t*)malloc(domain_length);
         next_req_domain->_printable_dest = (u_int8_t*)malloc(domain_length + 1);
@@ -679,7 +687,7 @@ static void socks5_handshake(int fd, char* buf, struct socks5_session *socks5_se
 
 // }
 
-static int socks5_send_connstate(int fd, u_int8_t state, u_int8_t atyp, u_int8_t *addr, uint16_t port)
+static int socks5_send_connstate(int fd, u_int8_t state, u_int8_t atyp, u_int8_t *addr, uint16_t port, int domainlength)
 {
         int ret = 0;
         size_t addr_off, total_send_len;
@@ -701,6 +709,14 @@ static int socks5_send_connstate(int fd, u_int8_t state, u_int8_t atyp, u_int8_t
                 memcpy(buf + 4, addr, 4);
                 memcpy(buf + 4 + 16, &port, 2);
                 total_send_len = 4 + 16 + 2;
+        } else if (atyp == 3) {
+                memcpy(buf + 5, &domainlength, 1); // pass domainlength
+                
+                // for(int i = 0; i < domainlength; i++) {
+                        memcpy(buf + 6 , addr, domainlength);
+                // }
+                memcpy(buf + 6 + domainlength + 1, &port, 2);
+                total_send_len = 6 + domainlength + 2;
         }
         
 
@@ -810,6 +826,7 @@ static int create_server2server_conn(int *fdptr, int atyp, char* straddr, u_int1
                 socklen_t len = sizeof(struct sockaddr_in);
                 ret = connect(tcpfd, (struct sockaddr*)&serv_addr, len);
 
+
                 if (ret == -1) {
                         ret = errno;
 
@@ -861,6 +878,96 @@ static int create_server2server_conn(int *fdptr, int atyp, char* straddr, u_int1
         }
         return 0;
 }
+
+/*
+ * return 0 on succeed
+
+*/
+
+static int _resolve_dns_and_tryconnect_loop(struct addrinfo *res, int *target_fd, 
+                                        int port, struct dns_resolve_result *dns_result)
+{
+        char buf[NI_MAXHOST];
+        void *ptr;
+        int ret = 0;
+
+        while(res) {
+                memset(buf, 0, NI_MAXHOST);
+
+                /* atyp 4 */
+                if (res->ai_family == AF_INET) {
+                        ptr = &((struct sockaddr_in*)res->ai_addr)->sin_addr;
+                
+                        inet_ntop(AF_INET, ptr, buf, NI_MAXHOST);
+
+                        ret = create_server2server_conn(target_fd, 1, buf, port);
+                        if (ret == 0) {
+                                log_debug("ip resolved: %s", buf);
+
+                                dns_result->atyp = 1;
+                                memcpy(dns_result->addrbuf, ptr, 4);
+
+                                return ret;
+                        }
+
+                } else if (res->ai_family == AF_INET6) {
+                        ptr = &((struct sockaddr_in6*)res->ai_addr)->sin6_addr;
+                
+                        inet_ntop(AF_INET6, ptr, buf, NI_MAXHOST);
+                        log_debug("ip resolved: %s", buf);
+                        
+
+                        ret = create_server2server_conn(target_fd, 4, buf, port);
+
+                        /* connection succesfull */
+                        if (ret == 0) {
+                                log_debug("ip resolved: %s", buf);
+
+                                dns_result->atyp = 4;
+                                memcpy(dns_result->addrbuf, ptr, 4);
+                                return ret;
+                        }
+                        
+
+                }
+
+                res = res->ai_next;
+
+        }
+
+        return -1;
+}
+
+/*
+ * return
+ * -1 resolve failed
+ */
+
+static int resolve_dns(u_int8_t* domainname, int *target_fd, int port, struct dns_resolve_result *dns_result) 
+{
+        struct addrinfo req_field;
+        void *ptr;
+        int ret = 0;
+        memset(&req_field, 0, sizeof(struct addrinfo));
+
+        struct addrinfo *res, *i;
+        /* try ipv4 first */
+        
+        req_field.ai_family = AF_UNSPEC;
+        req_field.ai_socktype = SOCK_DGRAM;
+
+        ret = getaddrinfo((char*)domainname, NULL, &req_field, &res);
+        if (ret != 0) {
+                perror("getaddrinfo");
+                return -1;
+        }
+
+        return _resolve_dns_and_tryconnect_loop(res, target_fd, port, dns_result);
+
+
+}
+
+
 
 // static int read_fd(int fd, u_int8_t *buf, size_t sizeofbuf, size_t sizeof_read)
 // {
@@ -1267,8 +1374,8 @@ static int start_unpack_packet_no_epl(int fd, void* reserved, struct socks5_sess
                                 free(straddr);
 
                                 if (ret == 0) {
-                                        socks5_send_connstate(fd, 0, next_req->atyp, next_req->dest, 
-                                                next_req->port);
+                                        socks5_send_connstate(fd, 0, 1, next_req->dest, 
+                                                next_req->port, 0);
                                         
                                         start_exchange_data2(fd, cur_conn_clientfd);
                                         // if (exc_ret == 1) {
@@ -1278,7 +1385,8 @@ static int start_unpack_packet_no_epl(int fd, void* reserved, struct socks5_sess
                                         // }
                                 } else {
                                         socks5_send_connstate(fd, 3, next_req->atyp, next_req->dest, 
-                                                next_req->port);
+                                                next_req->port, 0);
+                                        return 0;
                                 }
                         } else if (buf[3] == 4) {
                                 struct next_req_ipv6 *next_req = (struct next_req_ipv6*)buf;
@@ -1300,7 +1408,7 @@ static int start_unpack_packet_no_epl(int fd, void* reserved, struct socks5_sess
 
                                 if (ret == 0) {
                                         socks5_send_connstate(fd, 0, next_req->atyp, next_req->dest, 
-                                                next_req->port);
+                                                next_req->port, 0);
                                         
                                         start_exchange_data2(fd, cur_conn_clientfd);
                                         // if (exc_ret == 1) {
@@ -1310,15 +1418,40 @@ static int start_unpack_packet_no_epl(int fd, void* reserved, struct socks5_sess
                                         // }
                                 } else {
                                         socks5_send_connstate(fd, 3, next_req->atyp, next_req->dest, 
-                                                next_req->port);
+                                                next_req->port, 0);
+                                        return 0;
                                 }
                         } else if (buf[3] == 3) {
                                 struct next_req_domain next_req;
+                                struct dns_resolve_result dns_result; 
+
                                 parse_domain_socks5_req(buf, &next_req);
+
+                                int cur_conn_clientfd = 0;
 
                                 log_debug("SOCKS_REQ ver: %c; CMD: %s; type: %s; domain: %s:%d", buf[0], 
                                         cmd2str(next_req.cmd), ip2str(next_req.atyp), next_req._printable_dest,
                                         ntohs(next_req.port));
+
+                                
+                                ret = resolve_dns(next_req._printable_dest, &cur_conn_clientfd, next_req.port, &dns_result);
+                        
+                                if (ret == 0) {
+                                        
+                                        socks5_send_connstate(fd, 0, dns_result.atyp, dns_result.addrbuf, 
+                                                next_req.port, next_req._domain_length);
+                                        
+                                        start_exchange_data2(fd, cur_conn_clientfd);
+                                        // if (exc_ret == 1) {
+                                        //         close(cur_conn_clientfd);
+                                        //         close(fd);
+                                                return 0;
+                                        // }
+                                } else {
+                                        socks5_send_connstate(fd, 3, next_req.atyp, next_req.dest, 
+                                                next_req.port, next_req._domain_length);
+                                        return 0;
+                                }
                         }
                 }
         }while (ret != 0);
